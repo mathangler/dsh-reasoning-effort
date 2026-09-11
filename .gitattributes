@@ -1,0 +1,8 @@
+# Normalize line endings on check-in so the skill behaves identically on
+# Windows, macOS and Linux. Working trees may use CRLF; the repository is LF.
+* text=auto eol=lf
+
+# Keep these binary regardless of content sniffing.
+*.png binary
+*.jpg binary
+*.ico binary
