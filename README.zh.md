@@ -1,100 +1,139 @@
 # dsh-reasoning-effort
 
 一个为 [DeepSeek Harness](https://github.com/deepseek-ai/deepseek-harness) 编写的 **agent skill**：
-让某个模型路由在对话框的模型菜单里出现可选的**思考等级 / reasoning effort**，并诊断它通常出错的三种方式。
+让**自定义**（手写声明的）提供方路线上的每个模型，都拿到它**真实拥有**的思考等级 / reasoning effort，
+并诊断等级选择器通常出错的三种方式。
 
-它之所以存在：DSH 只有在适配器**为该模型报告了推理等级**时，菜单里才会出现「推理等级」子菜单；而对一条手写的
-provider 路由来说，这绝不会自己发生。本 skill 给出了解释症状的那条规则、配置 schema、决定"等级只是被列出"
-还是"真的发了出去"的**协议选择**，以及一个可以在动线上会话之前先跑的校验脚本。
+它之所以存在：DSH 只有在适配器为该模型报告了推理等级时，模型菜单里才会出现 **Effort（推理等级）**
+面板；而手写声明的路线永远不会继承这些元数据——pi-ai 是**按路由名**查表的，而且全有或全无，
+于是目录不认识的路由上的每个模型都会退回 `reasoning: false`，面板永远是空的。
+本 skill 从 DSH 自带的 pi-ai 目录推导出每个模型的真实档位，写成按模型的 `reasoningEfforts` 声明，
+并且**拒绝写入任何没有依据的东西**。
 
-## 它解决什么
+> Fork 溯源与相对上游的差异见 [FORK-NOTES.md](FORK-NOTES.md)。English: [README.md](README.md)。
 
-| 症状 | skill 给出的答案 |
+## 它做什么
+
+| 症状 | 本 skill 的处理 |
 | --- | --- |
-| 模型菜单没有「推理等级」子菜单 | 路由名不是 pi-ai 目录里的 provider，于是 `reasoning` 解析为 `false`——模型元数据是**按路由名**查表的，而且全有或全无 |
-| 加一个新模型后，其它模型的上下文长度/能力一起丢了 | 同一个原因：一条路由名不可能既是目录 provider、又承载目录还不认识的模型 |
-| 等级列出来了，但请求报 `does not support reasoning effort` | `reasoningEfforts` 会把未声明的等级一律钉成"不支持"，声明的集合是权威的 |
-| 配置写入被拒，整条路由从选择器里消失 | 路由级 `compat` 字段没有任何模型能接受（通常因为 `api` 解析成了空） |
-| 等级出现了，但 reasoning tokens 不动 | 该协议没把推理参数发出去——Responses 路由会忽略 `thinkingFormat` |
-
-## 最该记住的一条规则
-
-**pi-ai 的模型元数据是按路由名本身查表的，而且全有或全无。** 路由键若不等于 pi-ai 内置 provider id，就会拿到一张
-空目录表，于是该路由上**每一个**模型同时退回手写值：显示名、`contextWindow`（退到路由默认值）、
-`reasoning: false`、`thinkingLevelMap`、`compat`。这一条规则就能解释大多数"我的能力去哪了"。
-
-## 那个陷阱
-
-`compat: { thinkingFormat: deepseek }` 看起来像是"让思考生效"的开关，因此很容易把路由改成
-`api: openai-completions` 去用它。但在 OpenCode Go / Zen 网关上，这同时会**丢掉会话头**
-（`session_id` 只有 `openai-responses` 实现会原生发送；`openai-completions` 把它锁在
-`compat.sendSessionAffinityHeaders` 后面，而 DSH 把它标为 `"withhold"`，无法从 settings 打开）。
-下一轮请求就会以 `400 MissingSessionID` 失败——一个与思考等级毫无关系、却作为改动的副作用出现的故障。
-
-两种协议都接受同一份 `reasoningEfforts` 声明，所以通常**不必拿会话头去换等级**。先按会话头这一列决定协议，
-再在该协议内表达思考强度。
+| 模型菜单没有「推理等级」面板 | 找出所有手写声明的路线，推导每个模型的真实档位并写入 |
+| 等级列出来了，但请求报 `does not support reasoning effort` | 用目录对齐声明（`--fix`）：声明的字典是权威的，未声明的等级会被钉成"不支持" |
+| 档位不对——例如一个已经不能关闭思考的模型却提供了 `Off` | 档位来自证据而不是模板：强制思考的模型**根本没有 `off` 键** |
+| 配置写入被拒，整条路由从选择器里消失 | `check-reasoning-route.mjs` 离线报告 compat/协议不匹配，重启之前就能抓住 |
+| 等级出现了，但思考深度没变化 | `--probe`（需显式开启）记录网关是否接受该取值——文档同时写明：**被接受 ≠ 真的生效** |
 
 ## 安装
 
-skill 就是技能根目录下的一个目录，无需构建。
+技能根目录下的一个普通目录。无需构建，无需安装依赖——`js-yaml` 直接从你的 DSH 安装里取。
 
 **Windows (PowerShell)**
 
 ```powershell
-git clone https://github.com/mathangler/dsh-reasoning-effort "$env:TEMP\dsh-reasoning-effort"
+$src = "C:\path\to\dsh-reasoning-effort"
 $dest = "$env:USERPROFILE\.dsh\skills\dsh-reasoning-effort"
 New-Item -ItemType Directory -Force -Path $dest | Out-Null
-Copy-Item "$env:TEMP\dsh-reasoning-effort\SKILL.md","$env:TEMP\dsh-reasoning-effort\scripts" $dest -Recurse -Force
+Copy-Item "$src\SKILL.md","$src\README.md","$src\README.zh.md","$src\FORK-NOTES.md","$src\LICENSE","$src\data","$src\scripts" $dest -Recurse -Force
 ```
 
 **macOS / Linux**
 
 ```sh
-git clone https://github.com/mathangler/dsh-reasoning-effort /tmp/dsh-reasoning-effort
-mkdir -p "${DSH_HOME:-$HOME/.dsh}/skills/dsh-reasoning-effort"
-cp -R /tmp/dsh-reasoning-effort/SKILL.md /tmp/dsh-reasoning-effort/scripts \
-      "${DSH_HOME:-$HOME/.dsh}/skills/dsh-reasoning-effort/"
+src=/path/to/dsh-reasoning-effort
+dest="${DSH_HOME:-$HOME/.dsh}/skills/dsh-reasoning-effort"
+mkdir -p "$dest"
+cp -R "$src"/SKILL.md "$src"/README.md "$src"/README.zh.md "$src"/FORK-NOTES.md "$src"/LICENSE "$src"/data "$src"/scripts "$dest"/
 ```
 
-技能根目录是 `${DSH_HOME:-$HOME/.dsh}/skills`，`DSH_HOME` 可覆盖。新开一个会话（或重载 skills 面板）即可使用。
+技能根目录是 `${DSH_HOME:-$HOME/.dsh}/skills`。新开一个会话（或重载 skills 面板）即可使用。
 
 ## 不用 agent 也能用
 
-`scripts/check-reasoning-route.mjs` 是独立校验脚本，**不需要 DSH 进程**。它读取你的 settings 文档、你
-dsh 安装所固定的 pi-ai 目录、以及 `dsh-llm-pi-ai` 的 compat gates，然后逐模型报告：路由是否继承目录元数据、
-**实际生效的协议**、会提供哪些等级、以及每个 `compat` 字段在这条路由上是否有模型能接受。
+两个脚本都是独立的 Node ESM，Node 本来就有——DSH 就跑在它上面。
+
+### 写入档位
 
 ```sh
-node scripts/check-reasoning-route.mjs                      # 全部路由
-node scripts/check-reasoning-route.mjs --route my-route     # 指定路由
-node scripts/check-reasoning-route.mjs --settings /path/to/settings.yaml
+node scripts/apply-reasoning-efforts.mjs                    # 干跑（默认）：只打印计划
+node scripts/apply-reasoning-efforts.mjs --apply            # 备份 → 写入 → 重新校验
+node scripts/apply-reasoning-efforts.mjs --route opencode-go-0
+node scripts/apply-reasoning-efforts.mjs --apply --fix      # 同时对冲突声明做对齐
+node scripts/apply-reasoning-efforts.mjs --apply --probe    # 允许每个模型发 1 次最小请求
+node scripts/apply-reasoning-efforts.mjs --apply --strict --probe   # 只写实发已证实的模型
+node scripts/apply-reasoning-efforts.mjs --restore latest   # 回滚到最新备份
 ```
 
-无结构性问题时退出码为 `0`，有则为 `1`，找不到 dsh 安装为 `2`（此时用 `--dsh-root` 指定）。
-它复现的正是那条"严格写入校验"——也就是让配置错误的路由从模型选择器里消失的那一条，因此可以在**重启之前**就抓住错误。
+典型网关路线的干跑输出：
 
-`scripts/live-probe.md` 里有一份可直接粘贴的动态 Cordis Host 插件，用来报告**正在运行的**适配器对外声明的等级、
-以及 `resolveCallConfig` 实际接受哪些等级（用来抓"列出了却被拒绝"这个状态），并给出被拒路由的错误原文。
+| 路线 | 模型 | 现状 | 目标 | 依据 | 动作 |
+| --- | --- | --- | --- | --- | --- |
+| `my-gateway` | `glm-5.3-flash` | (无) | low / high / max | catalog | **新增声明** |
+| `my-gateway` | `deepseek-v4-pro` | (无) | off / high / max | catalog | **新增声明** |
+| `my-gateway` | `minimax-m2.5` | (无) | (无) | unknown | 不动 |
 
-## 三步验证
+`--apply` 会依次：写带时间戳的备份 → **重新解析**编辑后的文档 → 若改到了
+`llm-pi-ai.providers.*` 之外的任何路径则**拒绝写入** → 逐个模型读回比对。
+编辑是行级手术式的，未触碰的行（含注释）逐字节保留，重复运行是幂等的。
 
-1. **配置能解析** — 跑 `check-reasoning-route.mjs`。
-2. **等级是被接受，而不只是被列出** — 用 live probe。
-3. **线路上真的生效** — 用高档位发一次真实请求，确认 reasoning tokens 上升。只有这一步能证明网关接受 DSH 发的参数，
-   光看配置推断不出来。
+退出码：`0` 无事可做，`1` 有待办或发现问题，`2` 环境（安装 / `js-yaml` / settings 文档）读不到。
 
-## 两个各值一小时的坑
+### 检查路由
 
-- **动态 Cordis 插件写不了 settings。** `dsh-settings` 只接受原型**就是** Host bundle
-  `Object.prototype` 的对象，而动态插件跑在独立 realm 里，它造出的任何对象都过不了（`must be a plain object`）。
-  结论：用插件读，用文件写。
-- **从外部编辑 `settings.yaml` 不会热重载运行中的进程。** 实测该文件监视器不触发。配置变更需要**新的 `dsh` 进程**。
-  推论：不要因为运行中的进程还显示旧值就断定配置写错了。
+```sh
+node scripts/check-reasoning-route.mjs                  # 全部路由，只读
+node scripts/check-reasoning-route.mjs --route my-route --json
+```
 
-## 相关
+逐路由报告：是手写声明还是目录路线、同一 baseURL 对应哪个目录 provider、每个模型实际生效的 `api`、
+选择器会提供哪些档位及其来源、与目录的协议差异、以及每个 `compat` 字段是否有模型能接受。
+**problem**（会破坏解析）与 **notice**（无证据的模型，无需修复）分开呈现。
 
-- `opencode-go-session-header` — OpenCode Go / Zen 的 `400 MissingSessionID` 修复。**改路由协议之前**先读它，两者相互作用。
+两个脚本都接受 `--settings <path>` 与 `--dsh-root <path>`，识别 `DSH_ROOT` / `DSH_HOME`，
+并可用 `DSH_NO_SUBPROCESS=1` 完全跳过 `where`/`which` 兜底。
+
+## 证据，而不是模板
+
+每条声明都带来源，档位集合绝不假设：
+
+| 依据 | 含义 | 会写入吗 |
+| --- | --- | --- |
+| `probe` | 该模型的一次最小实发请求被接受 | 会 |
+| `vendor` | 提供方自己的文档（记录在 `data/reasoning-overrides.yaml`，带 URL） | 会 |
+| `catalog` | DSH 自带的 pi-ai 目录 | 会 |
+| `unknown` | 没有任何来源 | **不会**，只报告 |
+
+这件事比听起来重要：`glm-5.3` 与 `glm-5.3-flash` **永远**在思考——厂商已经取消关闭思考的能力，
+并对 `thinking.type: "disabled"` 直接报错，所以它们的诚实声明是 `{low, high, max}`，
+**没有 `off` 键**。模板化写入会给它们加一个点了就失败的 `Off`。
+
+## 验证
+
+1. `node scripts/check-reasoning-route.mjs` —— 无 problem。
+2. 刷新 GUI，打开 `/model` 选择器的 **Effort** 面板。（设置 → 模型的页面**故意没有**强度控件：
+   强度是"按模型"的能力，而同一提供方下的模型档位并不一致。）
+3. 可选：`--probe` 确认网关**接受**该取值。接受不等于生效——那要靠测 reasoning tokens。
+
+## 范围与安全
+
+- **内置提供方永不写入。** `llm-deepseek`（provider id `deepseek-official`）固定四档；
+  路由名等于 pi-ai 目录 provider id 的路线本来就继承元数据。两者都只读呈现。
+- **默认只读。** 不加 `--apply` 绝不碰 `settings.yaml`。
+- **可回滚。** 每次写入前都有带时间戳的备份；`--restore latest` 一键还原。
+- **不猜。** 无证据的模型原样保留。
+
+## 已知的坑（记录在此以免重复踩）
+
+- **`openai-completions` 发不出网关的会话头。** `compat.sendSessionAffinityHeaders` 在 DSH 里是
+  `"withhold"`（只有 pi-ai 目录能设置它），所以 completions 路线什么都不发。声明思考强度改变不了这一点。
+- **公开的端点表不是权威。** 某个网关把 `/responses` 文档化为只服务少数模型，实测却在该路径上连续
+  服务了另一个模型 **64 次**且零错误。因此协议差异只作为提示，绝不自动动作。
+- **`anthropic-messages` 把档位换算成 thinking 预算**，不是发一个 effort 字符串；该协议下声明里的
+  *值*是惰性的，真正有意义的是档位集合。
+- **动态 Cordis 插件写不了 settings**（realm 敏感的 `isPlainObject`）。用插件读，用文件写。
+- **热重载不确定。** settings 文件确实接了 watcher，但也观测到过外部编辑未被拾取的情况。
+  先刷新；把"重开一个 dsh 进程"作为兜底。若设置页面里还有未保存的改动，之后的一次 GUI 写入可能覆盖文件编辑。
 
 ## 许可
 
-MIT — 见 [LICENSE](LICENSE)。
+MIT —— 见 [LICENSE](LICENSE)。Fork 自
+[`mathangler/dsh-reasoning-effort`](https://github.com/mathangler/dsh-reasoning-effort)
+（MIT，© 2026 mathangler），差异见 [FORK-NOTES.md](FORK-NOTES.md)。

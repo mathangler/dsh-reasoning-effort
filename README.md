@@ -1,121 +1,165 @@
 # dsh-reasoning-effort
 
-A [DeepSeek Harness](https://github.com/deepseek-ai/deepseek-harness) **agent skill** for
-making a model route expose selectable **thinking / reasoning effort** levels — and for
-diagnosing the three ways it usually goes wrong.
+A [DeepSeek Harness](https://github.com/deepseek-ai/deepseek-harness) **agent skill**
+that gives every model on a *custom* (hand-declared) provider route the thinking /
+reasoning-effort levels it actually has — and diagnoses the three ways a level
+picker usually goes wrong.
 
-It exists because DSH's picker shows an "Effort" submenu only when the adapter reports
-reasoning levels for the selected model, and for a hand-declared provider route that
-never happens by accident. The skill carries the rule that explains the symptom, the
-configuration schema, the protocol decision that decides whether the levels are merely
-*listed* or actually *sent*, and a validator you can run before touching a live session.
+It exists because DSH's picker shows an **Effort** pane only when the adapter
+reports reasoning levels for the selected model, and a hand-declared route never
+inherits that metadata: pi-ai is looked up **by route name**, all-or-nothing, so
+every model on a route the catalog does not know falls back to `reasoning: false`
+and the pane stays empty. This skill derives each model's real level set from the
+pi-ai catalog that ships with DSH, writes it as a per-model `reasoningEfforts`
+declaration, and refuses to write anything it cannot source.
 
-> 中文说明见 [README.zh.md](README.zh.md).
+> 中文说明见 [README.zh.md](README.zh.md). Fork provenance and the diff against
+> upstream: [FORK-NOTES.md](FORK-NOTES.md).
 
-## What it solves
+## What it does
 
-| Symptom | What the skill tells you |
+| Symptom | What this skill does |
 | --- | --- |
-| The model menu has no 推理等级 / "Effort" submenu | The route name is not a pi-ai catalog provider, so `reasoning` resolved to `false` — metadata is looked up **by route name**, all-or-nothing |
-| Adding one new model stripped context size / capabilities from the others | Same cause: one route name cannot both be a catalog provider and carry an uncatalogued model |
-| A level is listed but a request fails with `does not support reasoning effort` | `reasoningEfforts` pins every undeclared level to unsupported; the declared set is authoritative |
-| A config write is refused and the whole route disappears from the picker | A route-level `compat` field no model on the route can accept (usually because `api` resolved to nothing) |
-| Levels appear, but reasoning tokens never move | The protocol sends no reasoning parameter — a Responses route ignores `thinkingFormat` |
-
-## The one rule worth remembering
-
-**pi-ai's model metadata is looked up by the route name itself, and the lookup is
-all-or-nothing.** A route whose key is not a pi-ai builtin provider id gets an empty
-catalog table, so *every* model on it falls back to hand-written values at once:
-display name, `contextWindow` (to the route default), `reasoning: false`,
-`thinkingLevelMap`, and `compat`. That single fact explains most "why is my capability
-missing" reports.
-
-## The trap
-
-`compat: { thinkingFormat: deepseek }` looks like the thing that makes thinking work, so
-it is tempting to move a route to `api: openai-completions` to use it. On an OpenCode Go
-/ Zen gateway that also **drops the session id** (`session_id` is sent natively only by
-the `openai-responses` implementation; `openai-completions` gates it behind
-`compat.sendSessionAffinityHeaders`, which DSH classifies `"withhold"` and cannot be
-enabled from settings). The next turn then fails with `400 MissingSessionID` — a failure
-that has nothing to do with effort levels, arriving as a side effect of the change.
-
-Both protocols accept the same `reasoningEfforts` declaration, so you normally get levels
-**without** trading the session header away. Choose the protocol by the session-header
-column, then express effort within it.
+| The model menu has no 推理等级 / "Effort" pane | Finds every hand-declared route, derives each model's real levels, and declares them |
+| A level is listed but a request fails with `does not support reasoning effort` | Reconciles the declaration with the catalog (`--fix`), because a declared map is authoritative and pins undeclared levels to unsupported |
+| Levels look wrong — e.g. a model that can no longer stop thinking is offered `Off` | The level set comes from evidence, not a template: a forced-thinking model gets no `off` key at all |
+| A config write is refused and the route vanishes from the picker | `check-reasoning-route.mjs` reports compat/protocol mismatches offline, before anything restarts |
+| Levels appear but reasoning never changes | `--probe` (opt-in) records whether the gateway accepts the value — and the docs are explicit that acceptance is not proof of behaviour |
 
 ## Install
 
-The skill is a directory under the DSH skills root. No build step.
+A directory under the DSH skills root. No build step, no dependencies to install —
+`js-yaml` is resolved out of your DSH installation.
 
 **Windows (PowerShell)**
 
 ```powershell
-git clone https://github.com/mathangler/dsh-reasoning-effort "$env:TEMP\dsh-reasoning-effort"
+$src = "C:\path\to\dsh-reasoning-effort"
 $dest = "$env:USERPROFILE\.dsh\skills\dsh-reasoning-effort"
 New-Item -ItemType Directory -Force -Path $dest | Out-Null
-Copy-Item "$env:TEMP\dsh-reasoning-effort\SKILL.md","$env:TEMP\dsh-reasoning-effort\scripts" $dest -Recurse -Force
+Copy-Item "$src\SKILL.md","$src\README.md","$src\README.zh.md","$src\FORK-NOTES.md","$src\LICENSE","$src\data","$src\scripts" $dest -Recurse -Force
 ```
 
 **macOS / Linux**
 
 ```sh
-git clone https://github.com/mathangler/dsh-reasoning-effort /tmp/dsh-reasoning-effort
-mkdir -p "${DSH_HOME:-$HOME/.dsh}/skills/dsh-reasoning-effort"
-cp -R /tmp/dsh-reasoning-effort/SKILL.md /tmp/dsh-reasoning-effort/scripts \
-      "${DSH_HOME:-$HOME/.dsh}/skills/dsh-reasoning-effort/"
+src=/path/to/dsh-reasoning-effort
+dest="${DSH_HOME:-$HOME/.dsh}/skills/dsh-reasoning-effort"
+mkdir -p "$dest"
+cp -R "$src"/SKILL.md "$src"/README.md "$src"/README.zh.md "$src"/FORK-NOTES.md "$src"/LICENSE "$src"/data "$src"/scripts "$dest"/
 ```
 
-The skills root is `${DSH_HOME:-$HOME/.dsh}/skills`; `DSH_HOME` overrides it. Start a new
-session (or reload the skills panel) and the skill is available.
+The skills root is `${DSH_HOME:-$HOME/.dsh}/skills`. Start a new session (or
+reload the skills panel) and the skill is available.
 
 ## Use it without an agent
 
-`scripts/check-reasoning-route.mjs` is a standalone validator — no DSH process needed. It
-reads your settings document, the pi-ai catalog pinned by your dsh install, and
-`dsh-llm-pi-ai`'s compat gates, then reports per model: whether the route inherits catalog
-metadata, the **effective protocol**, which levels would be offered, and whether any
-configured `compat` field has a model that can accept it.
+The two scripts are standalone Node ESM. Node is already present — DSH runs on it.
+
+### Apply the levels
 
 ```sh
-node scripts/check-reasoning-route.mjs                      # every route
-node scripts/check-reasoning-route.mjs --route my-route     # one route
-node scripts/check-reasoning-route.mjs --settings /path/to/settings.yaml
+node scripts/apply-reasoning-efforts.mjs                    # dry run (default): print the plan
+node scripts/apply-reasoning-efforts.mjs --apply            # back up, write, re-validate
+node scripts/apply-reasoning-efforts.mjs --route opencode-go-0
+node scripts/apply-reasoning-efforts.mjs --apply --fix      # also reconcile conflicting declarations
+node scripts/apply-reasoning-efforts.mjs --apply --probe    # allow 1 minimal live request per model
+node scripts/apply-reasoning-efforts.mjs --apply --strict --probe   # write only probe-verified models
+node scripts/apply-reasoning-efforts.mjs --restore latest   # roll back to the newest backup
 ```
 
-Exit code is `0` when no structural problem is found, `1` when one is, `2` when the dsh
-install cannot be located (pass `--dsh-root` then). It reproduces the exact strict-write
-check that makes a misconfigured route vanish from the model picker, so it catches the
-mistake *before* you restart anything.
+A dry run against a typical gateway route looks like this:
 
-`scripts/live-probe.md` holds a ready-to-paste dynamic Cordis Host plugin that reports
-what the **running** adapter advertises and which levels `resolveCallConfig` accepts —
-the check that catches "listed but rejected", plus a rejected route's error text.
+| route | model | current | target | evidence | action |
+| --- | --- | --- | --- | --- | --- |
+| `my-gateway` | `glm-5.3-flash` | (none) | low / high / max | catalog | **declare** |
+| `my-gateway` | `deepseek-v4-pro` | (none) | off / high / max | catalog | **declare** |
+| `my-gateway` | `minimax-m2.5` | (none) | (none) | unknown | leave alone |
 
-## Verify in three steps
+`--apply` then: writes a timestamped backup, re-parses the edited document,
+refuses the write if anything outside `llm-pi-ai.providers.*` changed, and reads
+every target model back to confirm. The edit is line-level and surgical, so
+untouched lines — including comments — survive byte for byte, and re-running is
+idempotent.
 
-1. **Config resolves** — `check-reasoning-route.mjs`.
-2. **Levels are accepted, not just listed** — the live probe.
-3. **The wire honours it** — one real request at a high level, confirming reasoning tokens
-   rise. Only this step proves the gateway accepts what DSH sends; config alone cannot.
+Exit codes: `0` nothing to do, `1` changes pending or problems found, `2` the
+environment (install, `js-yaml`, or the settings document) could not be read.
 
-## Two facts that save an hour each
+### Check a route
 
-- **A dynamic Cordis plugin cannot write settings.** `dsh-settings` accepts only objects
-  whose prototype *is* the Host bundle's `Object.prototype`, and a dynamic plugin runs in
-  a separate realm, so nothing it constructs passes (`must be a plain object`). Read from
-  a plugin, write to the file.
-- **Editing `settings.yaml` externally does not hot-reload a running process.** The file
-  provider's watcher has been observed not to fire. Config changes need a fresh `dsh`
-  process. Corollary: never conclude a config is wrong because a running process still
-  reports the old value.
+```sh
+node scripts/check-reasoning-route.mjs                  # every route, read-only
+node scripts/check-reasoning-route.mjs --route my-route --json
+```
 
-## Related
+Reports per route: hand-declared or catalog-backed, which catalog provider serves
+the same base URL, the effective `api` per model, the levels the picker would
+offer and where they come from, protocol differences against the catalog, and
+whether each `compat` field is accepted on a protocol that carries a model.
+Problems (which break resolution) are separated from notices (models with no
+evidence — nothing to fix).
 
-- `opencode-go-session-header` — the OpenCode Go / Zen `400 MissingSessionID` fix. Read it
-  **before** changing a route's protocol; the two interact.
+Both scripts accept `--settings <path>` and `--dsh-root <path>`; `DSH_ROOT` and
+`DSH_HOME` are honoured, and `DSH_NO_SUBPROCESS=1` skips the `where`/`which`
+fallback entirely.
+
+## Evidence, not templates
+
+Every declaration carries a source, and the level set is never assumed:
+
+| Evidence | Meaning | Written? |
+| --- | --- | --- |
+| `probe` | one minimal live request for this model was accepted | yes |
+| `vendor` | the provider's own documentation (`data/reasoning-overrides.yaml`, with a URL) | yes |
+| `catalog` | the pi-ai catalog that ships with DSH | yes |
+| `unknown` | nothing sources this model | **no** — reported only |
+
+This matters more than it sounds. `glm-5.3` and `glm-5.3-flash` **always** reason:
+the vendor removed the ability to disable thinking and errors on
+`thinking.type: "disabled"`, so their honest declaration is `{low, high, max}` —
+with no `off` key. A template would have handed them an `Off` option that fails.
+
+## Verify
+
+1. `node scripts/check-reasoning-route.mjs` — no problems.
+2. Refresh the GUI and open the `/model` picker's **Effort** pane. (The
+   Settings → Models page deliberately has no effort control: effort is a
+   per-model capability and models under one provider disagree about it.)
+3. Optional: `--probe` to confirm the gateway *accepts* the value. Acceptance is
+   not proof that thinking depth changed — measure reasoning tokens for that.
+
+## Scope and safety
+
+- **Built-in providers are never written.** `llm-deepseek` (provider id
+  `deepseek-official`) has a fixed four levels; routes whose key is a pi-ai
+  catalog provider id already inherit their metadata. Both are reported read-only.
+- **Read-only by default.** Nothing touches `settings.yaml` without `--apply`.
+- **Reversible.** Every write is preceded by a timestamped backup;
+  `--restore latest` puts it back.
+- **No guessing.** A model with no evidence is left exactly as it was.
+
+## Known traps (recorded so they are not rediscovered)
+
+- **`openai-completions` cannot send the gateway's session header.**
+  `compat.sendSessionAffinityHeaders` is `"withhold"` in DSH — only the pi-ai
+  catalog may set it — so a completions route sends nothing. Declaring effort does
+  not change that.
+- **A published endpoint table is not authoritative.** A gateway documenting
+  `/responses` as serving only some models still served 64 consecutive turns of a
+  different model on that path, with no errors. Protocol differences are reported
+  as notices, never acted on automatically.
+- **`anthropic-messages` maps levels to a thinking budget**, not to an effort
+  string, so a declared map's *values* are inert on that protocol — the level set
+  is the part that matters.
+- **A dynamic Cordis plugin cannot write settings** (realm-sensitive
+  `isPlainObject`). Read from a plugin, write to the file.
+- **Hot reload is uncertain.** The settings provider is wired to a watcher, yet a
+  case of an external edit not being picked up was observed. Refresh first; keep a
+  fresh `dsh` start as the fallback. If the Models page holds unsaved state, a
+  later GUI write can overwrite a file-level edit.
 
 ## License
 
-MIT — see [LICENSE](LICENSE).
+MIT — see [LICENSE](LICENSE). Forked from
+[`mathangler/dsh-reasoning-effort`](https://github.com/mathangler/dsh-reasoning-effort)
+(MIT, © 2026 mathangler); see [FORK-NOTES.md](FORK-NOTES.md).

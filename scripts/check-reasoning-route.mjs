@@ -2,276 +2,262 @@
 /**
  * check-reasoning-route.mjs — inspect how a `llm-pi-ai` route resolves, offline.
  *
- * Reads:
- *   - the settings document (`$DSH_HOME/settings.yaml`, overridable with --settings)
- *   - the pi-ai catalog pinned by the dsh install (--dsh-root to override discovery)
- *   - dsh-llm-pi-ai's compat gates, to classify each compat field by protocol
- *
- * Reports, per route:
+ * Strictly read-only. Reports, per route:
  *   - whether the route name is a pi-ai catalog provider (i.e. inherits metadata)
- *   - the effective `api` of every model: route `api` -> catalog entry `api` -> none
- *   - which models would resolve `reasoning: true` and their offered levels
- *   - for each configured `compat` field: which protocols accept it, and whether any
- *     model on the route does (the exact check strict settings writes perform)
+ *     and, if it is not, which catalog provider serves the same base URL
+ *   - the effective `api` of every model: route `api` -> catalog entry `api`
+ *   - which models would resolve `reasoning: true`, and the levels the picker
+ *     would actually offer (declared, inherited, or none)
+ *   - each configured `compat` field: which protocols accept it, and whether any
+ *     model on the route does — the exact check a strict settings write performs
  *
- * Strictly read-only. Exits 1 when a check fails, 0 otherwise.
+ * Where this revision differs from the upstream script:
+ *   - install discovery derives from the environment and `process.execPath`
+ *     *before* any subprocess, so it works on Windows, macOS and Linux, and in a
+ *     shell that denies child processes (upstream shelled out first, and could
+ *     exit 2 for a sandbox reason that had nothing to do with the config);
+ *   - the compat gates are read with a brace-aware scanner and a `withhold`
+ *     distinction, and when they cannot be read the script says **cannot be
+ *     checked** instead of emitting a confident wrong verdict;
+ *   - inherited levels use pi-ai's real rule, including its asymmetry (an absent
+ *     map key is *supported* for off/minimal/low/medium/high but *unsupported*
+ *     for xhigh/max), where upstream reported absent keys as offered.
+ *
+ * Exit codes: 0 no structural problem, 1 problem(s) found, 2 environment unreadable.
  */
-import { existsSync, readdirSync, readFileSync } from 'node:fs'
-import { execFileSync } from 'node:child_process'
-import { createRequire } from 'node:module'
-import { dirname, join, resolve } from 'node:path'
-import { homedir } from 'node:os'
+import { existsSync, readFileSync } from 'node:fs'
+import { dirname } from 'node:path'
+import { fileURLToPath } from 'node:url'
 
-// ---------------------------------------------------------------- arguments
-const args = process.argv.slice(2)
-const flag = (name, fallback) => {
-  const i = args.indexOf(name)
-  return i === -1 ? fallback : args[i + 1]
+import { THINKING_LEVELS, deriveFromCatalog, findOverride, loadOverrides, matchCatalogProvider, supportedLevels } from './lib/capability.mjs'
+import { defaultSettingsPath, dshVersion, findInstall, loadCatalog, loadCompatGates, loadYaml } from './lib/dsh-install.mjs'
+import { listRoutes, splitText } from './lib/yaml-edit.mjs'
+
+const SKILL_DIR = fileURLToPath(new URL('..', import.meta.url))
+const argv = process.argv.slice(2)
+const flagValue = (name, fallback) => {
+  const i = argv.indexOf(name)
+  return i === -1 ? fallback : argv[i + 1]
 }
-const has = (name) => args.includes(name)
-const settingsPath = flag('--settings', join(process.env.DSH_HOME ?? join(homedir(), '.dsh'), 'settings.yaml'))
-const wantRoute = flag('--route', undefined)
-const dshRootArg = flag('--dsh-root', undefined)
+const has = (name) => argv.includes(name)
 
 if (has('--help') || has('-h')) {
-  console.log(`usage: node check-reasoning-route.mjs [--route <name>] [--settings <path>] [--dsh-root <path>]
+  console.log(`usage: node check-reasoning-route.mjs [--route <name>] [--settings <path>] [--dsh-root <path>] [--json]
 
   --route     only report this route (default: every route under llm-pi-ai.providers)
   --settings  settings document to read (default: $DSH_HOME/settings.yaml)
   --dsh-root  dsh install root holding node_modules (default: discovered)
+  --json      machine-readable output
 
-Env: DSH_ROOT may supply the dsh root instead of --dsh-root.`)
+Env: DSH_ROOT supplies the dsh root; DSH_NO_SUBPROCESS=1 skips the where/which fallback.`)
   process.exit(0)
 }
 
-// ------------------------------------------------------------ dsh root / yaml
-function dshCandidateRoots() {
-  const roots = []
-  if (dshRootArg) roots.push(dshRootArg)
-  if (process.env.DSH_ROOT) roots.push(process.env.DSH_ROOT)
-  const profileModules = join(process.env.DSH_HOME ?? join(homedir(), '.dsh'), 'profiles', 'node_modules')
-  roots.push(profileModules)
-  try {
-    for (const line of execFileSync('where', ['dsh'], { encoding: 'utf8' }).split(/\r?\n/)) {
-      const bin = line.trim()
-      if (bin.length === 0) continue
-      const nodeModules = join(dirname(bin), 'node_modules')
-      roots.push(nodeModules, dirname(nodeModules))
-    }
-  } catch { /* dsh not on PATH */ }
-  try {
-    roots.push(execFileSync('npm', ['root', '-g'], { encoding: 'utf8' }).trim())
-  } catch { /* npm unavailable */ }
-  if (process.env.APPDATA) roots.push(join(process.env.APPDATA, 'npm', 'node_modules'))
-  roots.push(join(process.env.ProgramFiles ?? 'C:\\Program Files', 'nodejs', 'node_modules'))
-  return [...new Set(roots.filter((r) => typeof r === 'string' && r.length > 0))]
-}
-
-/**
- * The two layouts an install can use: package directories stacked directly in a
- * `node_modules`, or nested under the dsh package's own `node_modules`.
- */
-function buildLayouts(root) {
-  return [
-    {
-      piAiDist: join(root, '@earendil-works', 'pi-ai', 'dist'),
-      bundle: join(root, '@deepseek-ai', 'dsh-llm-pi-ai', 'lib', 'index.js'),
-      label: root,
-    },
-    {
-      piAiDist: join(root, '@deepseek-ai', 'dsh', 'node_modules', '@earendil-works', 'pi-ai', 'dist'),
-      bundle: join(root, '@deepseek-ai', 'dsh', 'node_modules', '@deepseek-ai', 'dsh-llm-pi-ai', 'lib', 'index.js'),
-      label: join(root, '@deepseek-ai', 'dsh', 'node_modules'),
-    },
-  ]
-}
-
-/** Prefer a layout whose adapter bundle exists, then one whose pi-ai exists. */
-function findInstall() {
-  const scanned = []
-  for (const root of dshCandidateRoots()) {
-    for (const layout of buildLayouts(root)) {
-      const hasPiAi = existsSync(layout.piAiDist)
-      const hasBundle = existsSync(layout.bundle)
-      if (hasPiAi && hasBundle) return layout
-      scanned.push(`${layout.label} (pi-ai:${hasPiAi ? 'y' : 'n'}, bundle:${hasBundle ? 'y' : 'n'})`)
-    }
-  }
-  return { piAiDist: undefined, bundle: undefined, scanned }
-}
-
-function requireYaml(fromDir) {
-  for (const base of [fromDir, join(process.env.DSH_HOME ?? join(homedir(), '.dsh'), 'profiles', 'node_modules')]) {
-    if (base === undefined) continue
-    try {
-      return createRequire(join(base, 'noop.js'))('js-yaml')
-    } catch { /* try next */ }
-  }
-  return undefined
-}
-
-const install = findInstall()
-const piAiDist = install.piAiDist
-const dshPiAiBundle = install.bundle
-if (piAiDist === undefined) {
-  console.error('could not locate the dsh install; pass --dsh-root <path containing node_modules>')
-  console.error('scanned:')
-  for (const line of install.scanned ?? []) console.error(`  ${line}`)
+const settingsPath = flagValue('--settings', defaultSettingsPath())
+const wantRoute = flagValue('--route', undefined)
+if (!existsSync(settingsPath)) {
+  console.error(`settings document not found: ${settingsPath}`)
   process.exit(2)
 }
 
-const yaml = requireYaml(dirname(settingsPath)) ?? requireYaml(dshRoot)
+const install = findInstall(flagValue('--dsh-root', undefined))
+const yaml = loadYaml([dirname(settingsPath), SKILL_DIR])
 if (yaml === undefined) {
-  console.error('could not load js-yaml; pass --settings from a directory with js-yaml reachable')
+  console.error('could not load js-yaml (it ships with DSH; point --settings at a directory that can reach it)')
+  process.exit(2)
+}
+if (install.piAiDist === undefined) {
+  console.error('could not locate the dsh install; pass --dsh-root <path containing node_modules>')
+  for (const line of install.scanned) console.error(`  tried ${line}`)
   process.exit(2)
 }
 
-console.log(`settings   : ${settingsPath}`)
-console.log(`dsh install: ${install.label}`)
-console.log(`pi-ai dist : ${existsSync(piAiDist) ? 'found' : 'MISSING'}`)
-console.log(`adapter    : ${existsSync(dshPiAiBundle) ? 'found' : 'MISSING (compat gates unavailable)'}`)
-
-// ------------------------------------------------------------- pi-ai catalog
-function catalogProviders() {
-  const dir = join(piAiDist, 'providers', 'data')
-  if (!existsSync(dir)) return new Map()
-  const out = new Map()
-  for (const file of readdirSync(dir).filter((f) => f.endsWith('.json') && !f.startsWith('.'))) {
-    let doc
-    try {
-      doc = JSON.parse(readFileSync(join(dir, file), 'utf8'))
-    } catch { continue }
-    const models = new Map()
-    for (const group of Object.values(doc)) {
-      for (const model of Object.values(group)) models.set(model.id, model)
-    }
-    out.set(file.replace(/\.json$/, ''), models)
-  }
-  return out
-}
-const catalog = catalogProviders()
-
-// ------------------------------------------------- compat field -> protocols
-/** Protocol sets a compat field is accepted on, parsed from dsh-llm-pi-ai's gates. */
-function compatProtocols() {
-  const table = new Map()
-  if (!existsSync(dshPiAiBundle)) return table
-  const source = readFileSync(dshPiAiBundle, 'utf8')
-  for (const [gate, protocols] of [
-    ['COMPLETIONS_COMPAT_GATE', ['openai-completions']],
-    ['RESPONSES_COMPAT_GATE', ['openai-responses', 'azure-openai-responses', 'openai-codex-responses']],
-    ['ANTHROPIC_COMPAT_GATE', ['anthropic-messages']],
-    ['BEDROCK_COMPAT_GATE', ['bedrock-converse-stream']],
-  ]) {
-    const at = source.indexOf(`const ${gate} = {`)
-    if (at === -1) continue
-    const end = source.indexOf('\n};', at)
-    const body = source.slice(at, end === -1 ? source.length : end)
-    for (const line of body.split(/\r?\n/)) {
-      const m = /^\s*([A-Za-z0-9_]+)\s*:\s*"(offer|withhold)"/.exec(line)
-      if (m === null || m[2] !== 'offer') continue
-      table.set(m[1], [...(table.get(m[1]) ?? []), ...protocols])
-    }
-  }
-  return table
-}
-const compatTable = compatProtocols()
-
-// ------------------------------------------------------------- the route check
-const LEVELS = ['off', 'minimal', 'low', 'medium', 'high', 'xhigh', 'max']
-const doc = yaml.load(readFileSync(settingsPath, 'utf8'))
-const providers = doc?.['llm-pi-ai']?.providers ?? {}
-const routeNames = wantRoute === undefined ? Object.keys(providers) : [wantRoute]
-
-if (routeNames.length === 0) {
-  console.log('\nno routes configured under llm-pi-ai.providers')
-  process.exit(0)
+const text = readFileSync(settingsPath, 'utf8')
+let doc
+try {
+  doc = yaml.load(text)
+} catch (error) {
+  console.error(`settings document does not parse: ${error.message}`)
+  process.exit(2)
 }
 
-let failures = 0
-for (const name of routeNames) {
-  const profile = providers[name]
-  console.log(`\n${'='.repeat(72)}\nroute: ${name}`)
-  if (profile === undefined) {
-    console.log('  not configured')
-    failures++
-    continue
-  }
-  const catalogModels = catalog.get(name)
-  const isCatalogRoute = catalogModels !== undefined
-  console.log(`  catalog route        : ${isCatalogRoute ? 'yes (inherits metadata)' : 'no (every field must be hand-written)'}`)
-  if (!isCatalogRoute) {
-    console.log(`  known provider ids   : ${[...catalog.keys()].slice(0, 6).join(', ')}, ...`)
-  }
-  console.log(`  route api            : ${profile.api ?? '(absent)'}`)
+const catalog = loadCatalog(install.piAiDist)
+const gates = loadCompatGates(install)
+const overrides = loadOverrides(yaml, SKILL_DIR)
+const catalogProviderIds = new Set(catalog.providers.keys())
+const routes = listRoutes(splitText(text).lines).filter((r) => wantRoute === undefined || r.id === wantRoute)
 
-  const configured = profile.models ?? []
-  const overrides = profile.modelOverrides ?? {}
-  if (configured.length === 0 && Object.keys(overrides).length > 0 && !isCatalogRoute) {
-    console.log('  ERROR: modelOverrides needs a catalog route; list models explicitly instead')
-    failures++
+const report = {
+  settings: settingsPath,
+  dsh: { root: install.label, version: dshVersion(install), piAiCatalog: catalog.providers.size, compatGates: gates.available },
+  routes: [],
+  problems: [],
+  notices: [],
+}
+
+if (!gates.available) {
+  report.problems.push(`compat gates unavailable (${gates.reason}) — compat fields are reported as "cannot be checked", never as unsettable`)
+}
+
+for (const route of routes) {
+  const profile = doc?.['llm-pi-ai']?.providers?.[route.id] ?? {}
+  const isCatalogRoute = catalogProviderIds.has(route.id)
+  const match = isCatalogRoute ? { providerId: route.id, confidence: 'base-url' } : matchCatalogProvider(catalog, { baseURL: route.baseURL }, route.modelIds)
+  const catalogProvider = match === undefined ? undefined : catalog.providers.get(match.providerId)
+  const entry = {
+    route: route.id,
+    declared: !isCatalogRoute,
+    api: route.api,
+    baseURL: route.baseURL,
+    catalogProvider: match?.providerId,
+    catalogMatchConfidence: match?.confidence,
+    models: [],
+    compat: [],
   }
 
-  const entries = configured.length > 0
-    ? configured.map((m) => ({ id: m.id, declared: m, override: undefined }))
-    : [...(catalogModels ?? new Map()).keys()].map((id) => ({ id, declared: undefined, override: overrides[id] }))
-
-  const resolved = []
-  for (const entry of entries) {
-    const base = catalogModels?.get(entry.id)
-    const api = profile.api ?? base?.api
-    const declared = entry.declared ?? entry.override ?? {}
-    const efforts = declared.reasoningEfforts
-    const inheritsReasoning = efforts === undefined ? base?.reasoning === true : false
-    const reasoning = efforts === false
-      ? false
-      : efforts !== undefined
-        ? true
-        : inheritsReasoning
-    const offered = efforts !== undefined && efforts !== false
-      ? LEVELS.filter((level) => Object.prototype.hasOwnProperty.call(efforts, level))
-      : (inheritsReasoning ? LEVELS.filter((level) => (base?.thinkingLevelMap ?? {})[level] !== null) : [])
+  for (const modelId of route.modelIds) {
+    const base = catalogProvider?.models.get(modelId)
+    const declaredModel = (profile.models ?? []).find((m) => m?.id === modelId) ?? {}
+    const declaredMap = declaredModel.reasoningEfforts
+    const override = findOverride(overrides.entries, { baseURL: route.baseURL, routeId: route.id, modelId })
+    const api = route.api ?? base?.api
     const problems = []
-    if (efforts !== undefined && efforts !== false && !(efforts === null)) {
-      for (const [level, wire] of Object.entries(efforts)) {
-        if (!LEVELS.includes(level)) problems.push(`unknown level "${level}" (allowed: ${LEVELS.join(', ')})`)
+
+    let offered
+    let reasoning
+    let source
+    if (declaredMap === false) {
+      offered = []
+      reasoning = false
+      source = 'declared-false'
+    } else if (declaredMap !== undefined && declaredMap !== null) {
+      offered = THINKING_LEVELS.filter((l) => Object.prototype.hasOwnProperty.call(declaredMap, l))
+      reasoning = true
+      source = 'declared'
+      for (const [level, wire] of Object.entries(declaredMap)) {
+        if (!THINKING_LEVELS.includes(level)) problems.push(`unknown level "${level}" (allowed: ${THINKING_LEVELS.join(', ')})`)
         else if (level !== 'off' && (typeof wire !== 'string' || wire.length === 0)) problems.push(`level "${level}" needs a non-empty wire value`)
       }
-      if (!Object.keys(efforts).some((l) => l !== 'off')) problems.push('offers no level beyond "off"; declare a thinking level or set false')
+      if (!offered.some((l) => l !== 'off')) problems.push('offers no level beyond "off"; declare a thinking level or set false')
+    } else if (override !== undefined) {
+      const derived = deriveFromCatalog(undefined)
+      const fromOverride = override.reasoning === true && typeof override.efforts === 'object' && override.efforts !== null
+        ? { reasoning: true, levels: THINKING_LEVELS.filter((l) => l in override.efforts).map((l) => ({ level: l })) }
+        : derived
+      offered = (fromOverride.levels ?? []).map((l) => l.level)
+      reasoning = fromOverride.reasoning ?? false
+      source = 'overrides-file (not yet written to settings)'
+    } else if (base !== undefined) {
+      offered = supportedLevels(base)
+      reasoning = base.reasoning === true
+      source = 'catalog'
+    } else {
+      offered = []
+      reasoning = false
+      source = 'none'
+      // A known-unknown, not a structural defect: nothing sources this model, so
+      // nothing can be declared for it. Reported as a notice so that the exit
+      // code keeps meaning "the configuration is broken".
+      report.notices.push({ route: route.id, model: modelId, text: 'no catalog entry, no override and no declared reasoningEfforts — this model exposes no effort levels' })
     }
-    resolved.push({ id: entry.id, api, reasoning, offered, problems, source: efforts !== undefined ? 'declared' : (inheritsReasoning ? 'catalog' : 'none') })
-    console.log(`  - ${entry.id}`)
-    console.log(`      api          : ${api ?? 'NONE  <-- sets compat fields cannot be matched'}`)
-    console.log(`      reasoning    : ${reasoning === true ? 'true' : 'false'}`)
-    console.log(`      offered      : ${offered.length > 0 ? offered.join(', ') : '(none — picker will show no effort levels)'}`)
-    console.log(`      levels from  : ${resolved.at(-1).source}`)
-    for (const p of problems) {
-      console.log(`      PROBLEM      : ${p}`)
-      failures++
-    }
+
+    entry.models.push({ id: modelId, api, reasoning, offered, source, problems, catalogApi: base?.api })
+    for (const p of problems) report.problems.push(`route "${route.id}" model "${modelId}": ${p}`)
   }
 
-  // The exact check strict settings writes perform.
+  // Route-level compat: a strict write rejects the route when NO model speaks a
+  // protocol that takes the field.
   for (const field of Object.keys(profile.compat ?? {})) {
-    const takers = compatTable.get(field)
-    if (takers === undefined) {
-      console.log(`  compat "${field}": not in dsh-llm-pi-ai's gates (cannot be set from settings.yaml)`)
+    const offeredOn = gates.offers.get(field)
+    const withheldOn = gates.withholds.get(field)
+    if (!gates.available) {
+      entry.compat.push({ field, verdict: 'cannot be checked (gates unavailable)' })
       continue
     }
-    const matched = resolved.some((m) => m.api !== undefined && takers.includes(m.api))
-    console.log(`  compat "${field}": protocols ${takers.join(', ')} -> ${matched ? 'matched' : 'NO MODEL ON THIS ROUTE TAKES IT  <-- strict write rejects the whole route'}`)
+    if (offeredOn === undefined) {
+      entry.compat.push({ field, verdict: withheldOn === undefined ? 'not a known compat field' : 'withheld: catalog-only, DSH refuses it from settings.yaml' })
+      report.problems.push(`route "${route.id}": compat "${field}" is ${withheldOn === undefined ? 'not a known compat field' : 'catalog-only (withheld)'}`)
+      continue
+    }
+    const matched = entry.models.some((m) => m.api !== undefined && offeredOn.includes(m.api))
+    entry.compat.push({ field, protocols: offeredOn, matched })
     if (!matched) {
-      failures++
-      console.log(`      fix: state the route's api (e.g. api: ${takers[0]}), or move the field onto individual models`)
+      report.problems.push(`route "${route.id}": compat "${field}" has no model on a protocol that takes it (${offeredOn.join(', ')}) — a strict write rejects the whole route`)
     }
   }
+
+  // Model-level compat is a hard error when the model's protocol does not take it.
+  for (const model of profile.models ?? []) {
+    for (const field of Object.keys(model?.compat ?? {})) {
+      const offeredOn = gates.offers.get(field)
+      const api = route.api ?? catalogProvider?.models.get(model?.id)?.api
+      if (!gates.available) continue
+      if (offeredOn === undefined || !offeredOn.includes(api)) {
+        report.problems.push(`route "${route.id}" model "${model?.id}": compat "${field}" is not accepted on protocol "${api ?? '(unresolved)'}" — this fails resolution`)
+      }
+    }
+  }
+
+  report.routes.push(entry)
 }
 
-console.log(`\n${'='.repeat(72)}`)
-if (failures === 0) {
-  console.log('OK: no structural problems found. Levels still need a live check — a listed level can')
-  console.log('    still be rejected by the adapter, and only a real request proves the gateway honours it.')
+const deepseekSection = doc?.['llm-deepseek']
+const deepseekNote = deepseekSection === undefined
+  ? undefined
+  : { section: 'llm-deepseek', provider: 'deepseek-official', levels: ['off', 'low', 'high', 'max'], note: 'built-in adapter; fixed four levels, never per-model' }
+
+if (has('--json')) {
+  console.log(JSON.stringify({ ...report, deepseek: deepseekNote }, null, 2))
 } else {
-  console.log(`${failures} problem(s) found.`)
+  console.log(`settings    : ${settingsPath}`)
+  console.log(`dsh install : ${install.label}${dshVersion(install) === undefined ? '' : ` (dsh ${dshVersion(install)})`}`)
+  console.log(`pi-ai       : ${catalog.providers.size} catalog providers`)
+  console.log(`compat gates: ${gates.available ? `parsed (${gates.gatesFound} gate literals)` : `UNAVAILABLE — ${gates.reason}`}`)
+  if (routes.length === 0) console.log('\nno routes configured under llm-pi-ai.providers')
+
+  for (const r of report.routes) {
+    console.log(`\n${'='.repeat(72)}\nroute: ${r.route}`)
+    console.log(`  route kind        : ${r.declared ? 'hand-declared (catalog knows no provider by this name)' : 'catalog route (inherits metadata)'}`)
+    console.log(`  route api         : ${r.api ?? '(absent)'}`)
+    if (r.baseURL !== undefined) console.log(`  baseURL           : ${r.baseURL}`)
+    if (r.catalogProvider !== undefined && r.declared) {
+      console.log(`  catalog provider  : ${r.catalogProvider} ${r.catalogMatchConfidence === 'model-ids' ? '(weak match: by model ids, no baseURL match)' : '(same base URL)'}`)
+    } else if (r.declared) {
+      console.log('  catalog provider  : none matches this base URL — every field is hand-written')
+    }
+    for (const m of r.models) {
+      console.log(`  - ${m.id}`)
+      console.log(`      api       : ${m.api ?? 'NONE  <-- compat fields cannot be matched'}`)
+      console.log(`      reasoning : ${m.reasoning === true ? 'true' : 'false'}`)
+      console.log(`      offered   : ${m.offered.length > 0 ? m.offered.join(', ') : '(none — the picker shows no effort levels)'}`)
+      console.log(`      levels via: ${m.source}`)
+      if (m.catalogApi !== undefined && m.api !== undefined && m.catalogApi !== m.api) {
+        console.log(`      NOTE      : the catalog serves this model over "${m.catalogApi}", this route uses "${m.api}" — the gateway splits by path`)
+      }
+    }
+    for (const c of r.compat) {
+      if (c.verdict !== undefined) console.log(`  compat "${c.field}": ${c.verdict}`)
+      else console.log(`  compat "${c.field}": protocols ${c.protocols.join(', ')} -> ${c.matched ? 'matched' : 'NO MODEL ON THIS ROUTE TAKES IT  <-- strict write rejects the whole route'}`)
+    }
+  }
+
+  if (deepseekNote !== undefined) {
+    console.log(`\nbuilt-in: ${deepseekNote.section} (provider ${deepseekNote.provider}) — levels ${deepseekNote.levels.join('/')}; never per-model, never written by this skill`)
+  }
+
+  console.log(`\n${'='.repeat(72)}`)
+  if (report.notices.length > 0) {
+    console.log(`${report.notices.length} notice(s) — nothing to fix, nothing declarable:`)
+    for (const n of report.notices) console.log(`  - ${n.route}/${n.model}: ${n.text}`)
+  }
+  if (report.problems.length === 0) {
+    console.log('OK: no structural problem found. Levels still need a live check — a listed level can be')
+    console.log('    rejected by the adapter, and only a real request proves the gateway honours it.')
+  } else {
+    console.log(`${report.problems.length} problem(s):`)
+    for (const p of report.problems) console.log(`  - ${p}`)
+  }
+  console.log('\nTo change a hand-declared route, use scripts/apply-reasoning-efforts.mjs (dry run by default).')
 }
-process.exit(failures === 0 ? 0 : 1)
+
+process.exit(report.problems.length === 0 ? 0 : 1)

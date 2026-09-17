@@ -1,0 +1,52 @@
+# Reasoning-effort evidence for models the pi-ai catalog does not cover.
+#
+# This file is the *patch layer*, not the primary source. Start from the pi-ai
+# catalog (a route named after a catalog provider inherits it for free); add an
+# entry here only when the catalog has nothing and a provider's own documentation
+# does.
+#
+# Rules for an entry:
+#   * every claim needs `source` (a URL) and `evidence`;
+#   * `efforts` must use DSH's seven level names, and only `off` may be null;
+#   * never guess. If neither the catalog nor a vendor page says it, leave the
+#     model out — the writer then reports it as unknown and changes nothing.
+#
+# evidence: probe > vendor > catalog > unknown  (see scripts/lib/capability.mjs)
+version: 1
+
+entries:
+  # `deepseek-flash` is the current DeepSeek model name; the `deepseek-v4-flash*`
+  # ids are legacy aliases the vendor still accepts and serves from
+  # DeepSeek-V4.1-Flash. It appears in the gateway's `GET /v1/models` listing but
+  # in no catalog, no models.dev entry and no published endpoint table, so this
+  # entry rests on the vendor's own documentation.
+  - match:
+      baseURL: https://opencode.ai/zen/go/v1
+      model: deepseek-flash
+    reasoning: true
+    efforts:
+      off: null
+      low: low
+      high: high
+      max: max
+    evidence: vendor
+    source: https://api-docs.deepseek.com/quick_start/pricing
+    note: >-
+      Vendor documents thinking + non-thinking modes with reasoning_effort
+      none|low|high|max. The gateway's `/zen/go/v1` surface is undocumented, so
+      the level set is a passthrough claim: the levels are what the model
+      accepts, not a promise that this route forwards them.
+
+  # Alias of the same family, listed by the gateway's model endpoint.
+  - match:
+      baseURL: https://opencode.ai/zen/go/v1
+      model: deepseek-v4.1-flash
+    reasoning: true
+    efforts:
+      off: null
+      low: low
+      high: high
+      max: max
+    evidence: vendor
+    source: https://api-docs.deepseek.com/quick_start/pricing
+    note: Same family as deepseek-v4-flash; vendor-documented thinking controls.
