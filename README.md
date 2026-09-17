@@ -13,8 +13,8 @@ and the pane stays empty. This skill derives each model's real level set from th
 pi-ai catalog that ships with DSH, writes it as a per-model `reasoningEfforts`
 declaration, and refuses to write anything it cannot source.
 
-> 中文说明见 [README.zh.md](README.zh.md). Fork provenance and the diff against
-> upstream: [FORK-NOTES.md](FORK-NOTES.md).
+> 中文说明见 [README.zh.md](README.zh.md). What this revision changes, and why:
+> [FORK-NOTES.md](FORK-NOTES.md).
 
 ## What it does
 
@@ -160,6 +160,4 @@ with no `off` key. A template would have handed them an `Off` option that fails.
 
 ## License
 
-MIT — see [LICENSE](LICENSE). Forked from
-[`mathangler/dsh-reasoning-effort`](https://github.com/mathangler/dsh-reasoning-effort)
-(MIT, © 2026 mathangler); see [FORK-NOTES.md](FORK-NOTES.md).
+MIT — see [LICENSE](LICENSE). © 2026 mathangler.

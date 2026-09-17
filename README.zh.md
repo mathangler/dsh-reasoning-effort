@@ -10,7 +10,7 @@
 本 skill 从 DSH 自带的 pi-ai 目录推导出每个模型的真实档位，写成按模型的 `reasoningEfforts` 声明，
 并且**拒绝写入任何没有依据的东西**。
 
-> Fork 溯源与相对上游的差异见 [FORK-NOTES.md](FORK-NOTES.md)。English: [README.md](README.md)。
+> 相对上一版的变更与理由见 [FORK-NOTES.md](FORK-NOTES.md)。English: [README.md](README.md)。
 
 ## 它做什么
 
@@ -134,6 +134,4 @@ node scripts/check-reasoning-route.mjs --route my-route --json
 
 ## 许可
 
-MIT —— 见 [LICENSE](LICENSE)。Fork 自
-[`mathangler/dsh-reasoning-effort`](https://github.com/mathangler/dsh-reasoning-effort)
-（MIT，© 2026 mathangler），差异见 [FORK-NOTES.md](FORK-NOTES.md)。
+MIT —— 见 [LICENSE](LICENSE)。© 2026 mathangler。
