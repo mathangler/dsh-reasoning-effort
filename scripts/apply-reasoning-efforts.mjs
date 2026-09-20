@@ -28,6 +28,7 @@ import {
   findOverride,
   loadOverrides,
   matchCatalogProvider,
+  siblingCandidates,
   toEffortsMap,
 } from './lib/capability.mjs'
 import {
@@ -109,6 +110,81 @@ const doProbe = has('--probe') || doStrict
 const doFixRoutes = has('--fix-routes')
 const asJson = has('--json')
 const reportPath = flagValue('--report', undefined)
+
+// ---------------------------------------------------------------- --decide
+// Records the answer to the one question this tool will not answer for you: what
+// a model offers when neither the installed catalog nor a cited vendor page says.
+// It is a recorder, not a guesser — the value has to come from the user.
+const decideSpecs = flagAll('--decide')
+if (decideSpecs.length > 0) {
+  const decisionsPath = join(SKILL_DIR, 'data', 'user-decisions.yaml')
+  const yamlForDecisions = loadYaml([SKILL_DIR])
+  if (yamlForDecisions === undefined || typeof yamlForDecisions.dump !== 'function') {
+    console.error('could not load js-yaml to record a decision')
+    process.exit(2)
+  }
+  const existing = existsSync(decisionsPath) ? yamlForDecisions.load(readFileSync(decisionsPath, 'utf8')) : undefined
+  const entries = Array.isArray(existing?.entries) ? existing.entries.filter((e) => typeof e === 'object' && e !== null) : []
+  const recorded = []
+  for (const spec of decideSpecs) {
+    const eq = spec.indexOf('=')
+    const slash = spec.indexOf('/')
+    if (eq === -1 || slash === -1 || slash >= eq) {
+      console.error(`--decide expects <route>/<model>=<levels|false|skip>, got: ${spec}`)
+      process.exit(2)
+    }
+    const routeId = spec.slice(0, slash)
+    const modelId = spec.slice(slash + 1, eq)
+    const value = spec.slice(eq + 1).trim()
+    const entry = {
+      match: { provider: routeId, model: modelId },
+      decidedAt: new Date().toISOString().slice(0, 10),
+      evidence: 'user',
+    }
+    if (value === 'skip') {
+      entry.decision = 'skip'
+      entry.note = 'user decision: leave undeclared'
+    } else if (value === 'false' || value === 'no' || value === 'none') {
+      entry.reasoning = false
+      entry.note = 'user decision: non-reasoning model'
+    } else {
+      const efforts = {}
+      for (const token of value.split(',').map((t) => t.trim()).filter((t) => t.length > 0)) {
+        const [level, wire] = token.split('=').map((t) => t.trim())
+        if (!THINKING_LEVELS.includes(level)) {
+          console.error(`"${level}" is not a pi-ai level (allowed: ${THINKING_LEVELS.join(', ')})`)
+          process.exit(2)
+        }
+        efforts[level] = level === 'off' && (wire === undefined || wire === 'null') ? null : (wire ?? level)
+      }
+      if (!Object.keys(efforts).some((l) => l !== 'off')) {
+        console.error(`--decide "${spec}" offers no level beyond "off"`)
+        process.exit(2)
+      }
+      entry.reasoning = true
+      entry.efforts = efforts
+      entry.note = 'user decision'
+    }
+    const at = entries.findIndex((e) => e?.match?.provider === routeId && e?.match?.model === modelId)
+    if (at === -1) entries.push(entry)
+    else entries[at] = { ...entries[at], ...entry }
+    recorded.push(`${routeId}/${modelId} = ${value}`)
+  }
+  const header = [
+    '# Decisions recorded for models that neither the pi-ai catalog nor a provider',
+    '# page covers. Written by `apply-reasoning-efforts.mjs --decide`; see SKILL.md.',
+    '#',
+    '#   reasoning: false          declare the model as non-reasoning',
+    '#   decision: skip            leave it undeclared, and stop asking',
+    '#   efforts: {low: low, ...}  declare exactly these levels',
+    '',
+  ].join('\n')
+  mkdirSync(dirname(decisionsPath), { recursive: true })
+  writeFileSync(decisionsPath, header + yamlForDecisions.dump({ version: 1, entries }, { lineWidth: 200, noRefs: true }), 'utf8')
+  console.log(`recorded ${recorded.length} decision(s) in ${decisionsPath}:`)
+  for (const line of recorded) console.log(`  - ${line}`)
+  console.log('')
+}
 
 // A gateway does not necessarily follow the protocols its catalog entry declares
 // — measured on this machine, an `openai-responses` route served a model the
@@ -221,7 +297,7 @@ for (const route of routes) {
       baseURL: route.baseURL,
       model: modelId,
       catalogApi: entry?.api,
-      evidence: derived.evidence ?? (derived.source === 'catalog' ? 'catalog' : 'unknown'),
+      evidence: derived.evidence ?? (override !== undefined ? (override.evidence ?? 'user') : entry !== undefined ? 'catalog' : 'unknown'),
       evidenceSource: derived.sourceUrl,
       reason: derived.reason,
       current: current?.has === true ? current.value : undefined,
@@ -235,9 +311,31 @@ for (const route of routes) {
       item.protocolMismatch = { catalogApi: entry.api, routeApi: route.api }
     }
 
-    if (target === undefined) {
-      item.action = 'skip-no-evidence'
+    // A recorded "leave it undeclared" answer is a settled question, not a gap.
+    if (override?.decision === 'skip') {
+      item.action = 'skip-by-decision'
+      item.note = '你已决定该模型暂不声明档位'
+    } else if (derived.reasoning === false) {
+      // The evidence says it does not reason. State that explicitly rather than
+      // leaving the capability to a field's absence, so "no effort levels" is a
+      // decision on the record instead of an accident.
+      item.target = false
+      if (current?.has === true && current.value === false) {
+        item.action = 'none'
+        item.note = 'already declared as a non-reasoning model'
+      } else if (current?.has === true) {
+        item.action = doFix ? 'mark-non-reasoning' : 'conflict'
+        item.note = '证据显示不支持思考，但文件里声明了档位'
+      } else {
+        item.action = 'mark-non-reasoning'
+        item.note = '证据显示不支持思考，写成显式 false'
+      }
+    } else if (target === undefined) {
+      // Nothing sources this model. Do not guess, do not leave it silently
+      // undeclared: stop and put the question to the user.
+      item.action = 'needs-decision'
       item.note = derived.reason ?? 'no evidence for this model'
+      item.candidates = siblingCandidates(catalog, modelId, catalogProvider?.id)
     } else if (current?.has !== true) {
       item.action = 'insert'
     } else if (current.value === false) {
@@ -250,7 +348,7 @@ for (const route of routes) {
       item.action = 'none'
       item.note = 'already matches the evidence'
     }
-    if (doStrict && item.action !== 'skip-no-evidence' && item.evidence !== 'probe') {
+    if (doStrict && item.action !== 'needs-decision' && item.action !== 'skip-by-decision' && item.evidence !== 'probe') {
       item.action = 'skip-strict'
       item.note = `--strict: evidence is "${item.evidence}", not a live probe`
     }
@@ -310,9 +408,13 @@ if (doFixRoutes) {
 }
 
 // ------------------------------------------------------------------- reporting
-const actions = plan.filter((i) => i.action === 'insert' || i.action === 'replace')
+/** Actions that change the document. */
+const WRITABLE = new Set(['insert', 'replace', 'mark-non-reasoning'])
+const actions = plan.filter((i) => WRITABLE.has(i.action))
 const conflicts = plan.filter((i) => i.action === 'conflict')
-const skipped = plan.filter((i) => i.action === 'skip-no-evidence' || i.action === 'skip-strict')
+const skipped = plan.filter((i) => i.action === 'skip-strict')
+const undecided = plan.filter((i) => i.action === 'needs-decision')
+const byDecision = plan.filter((i) => i.action === 'skip-by-decision')
 
 function levelsOf(map) {
   if (map === undefined) return '(无)'
@@ -337,15 +439,37 @@ function buildReport() {
     out.push('（没有自定义提供方，或没有任何模型）')
     out.push('')
   } else {
+    // Coverage headline: the contract is that *every* model on a hand-declared
+    // route ends up either declared or explicitly waiting on a decision — never
+    // silently undeclared.
+    const byRoute = new Map()
+    for (const item of plan) {
+      const b = byRoute.get(item.route) ?? { levels: 0, nonReasoning: 0, undecided: 0, byDecision: 0 }
+      if (item.target === false) b.nonReasoning++
+      else if (item.action === 'needs-decision') b.undecided++
+      else if (item.action === 'skip-by-decision') b.byDecision++
+      else b.levels++
+      byRoute.set(item.route, b)
+    }
+    for (const [routeId, b] of byRoute) {
+      const bits = [`${b.levels} 个有思考档位`]
+      if (b.nonReasoning > 0) bits.push(`${b.nonReasoning} 个显式非推理`)
+      if (b.byDecision > 0) bits.push(`${b.byDecision} 个按你的决定不声明`)
+      if (b.undecided > 0) bits.push(`**${b.undecided} 个待你决定**`)
+      out.push(`- \`${routeId}\`：${b.levels + b.nonReasoning + b.undecided + b.byDecision} 个模型 —— ${bits.join('，')}`)
+    }
+    out.push('')
     out.push('| 路线 | 模型 | 现状 | 目标 | 依据 | 动作 |')
     out.push('| --- | --- | --- | --- | --- | --- |')
     for (const item of plan) {
       const actionText =
         item.action === 'insert' ? '**新增声明**'
         : item.action === 'replace' ? '**改写声明**'
+        : item.action === 'mark-non-reasoning' ? '**显式声明为非推理**'
+        : item.action === 'needs-decision' ? '**需要你决定**'
+        : item.action === 'skip-by-decision' ? '按你的决定不声明'
         : item.action === 'conflict' ? '冲突（加 `--fix` 才对）'
         : item.action === 'skip-strict' ? '跳过（--strict）'
-        : item.action === 'skip-no-evidence' ? '不动（无依据）'
         : '无需改动'
       out.push(`| \`${item.route}\` | \`${item.model}\` | ${levelsOf(item.current)} | ${levelsOf(item.target)} | ${item.evidence} | ${actionText} |`)
     }
@@ -365,7 +489,7 @@ function buildReport() {
       if (bits.length > 0) out.push(`- \`${item.route}/${item.model}\`：${bits.join(' · ')}`)
     }
     out.push('')
-    out.push('依据等级：`probe`（实发已证实）＞`vendor`（厂商文档）＞`catalog`（目录声明，网关未实证）＞`unknown`。')
+    out.push('依据等级：`probe`（实发已证实）＞`vendor`（厂商文档）＞`user`（你记录的决定）＞`catalog`（目录声明，网关未实证）＞`unknown`（据此**不写入**，只提问）。')
     out.push('')
   }
 
@@ -399,6 +523,41 @@ function buildReport() {
     out.push('## 内置提供方（只读）')
     out.push('')
     out.push(`- \`llm-deepseek\`（provider id \`deepseek-official\`）：档位固定为 **off / low / high / max**（4 档），无 per-model 声明。`)
+    out.push('')
+  }
+
+  if (undecided.length > 0) {
+    out.push('## 需要你决定 —— 技能不会替你猜')
+    out.push('')
+    out.push('这些模型既不在 pi-ai 目录里，也没有可引用的厂商文档，所以技能**不会**写入任何档位：猜一个写进去等于撒谎。给一个答案，技能会把它记进 `data/user-decisions.yaml` 并据此补全。')
+    out.push('')
+    for (const item of undecided) {
+      out.push(`### \`${item.route}/${item.model}\``)
+      out.push('')
+      out.push(`- 现状：${levelsOf(item.current)}｜未写入原因：${item.note}`)
+      const candidates = Array.isArray(item.candidates) ? item.candidates : []
+      if (candidates.length > 0) {
+        out.push('- 同族旁证（**其他网关的条目，不是本条路线**；只供你判断，技能不会据此写入）：')
+        for (const c of candidates.slice(0, 6)) {
+          const levels = c.levels.length > 0 ? c.levels.join('/') : '(无档位)'
+          out.push(`  - \`${c.providerId}\` 的 \`${c.id}\`（${c.api}，${c.explicitMap ? 'declares a map' : 'no map'}）→ ${levels}`)
+        }
+        if (candidates.length > 6) out.push(`  - …另有 ${candidates.length - 6} 条`)
+      } else {
+        out.push('- 同族旁证：无（目录里没有任何 provider 收录过这个 id）')
+      }
+      out.push('- 可选答案：')
+      const suggestion = candidates.find((c) => c.reasoning && c.levels.length > 0)
+      if (suggestion !== undefined) {
+        out.push(`  - 按同族旁证声明：\`--decide '${item.route}/${item.model}=${suggestion.levels.join(',')}'\``)
+      }
+      out.push(`  - 声明为不支持思考：\`--decide '${item.route}/${item.model}=false'\``)
+      out.push(`  - 暂不声明、技能不再来问：\`--decide '${item.route}/${item.model}=skip'\``)
+      out.push(`  - 你自己给档位：\`--decide '${item.route}/${item.model}=<${THINKING_LEVELS.join('|')}>'\``)
+      out.push('- 或者先实测一次（每个模型一次最小请求，会产生费用）：`--probe`')
+      out.push('')
+    }
+    out.push('记录之后重跑一次（可与 `--apply` 同一次调用）即可补全这些模型。')
     out.push('')
   }
 
@@ -462,7 +621,7 @@ if (doApply && doFixRoutes && moves.length > 0) {
 
 if (doApply) {
   for (const item of plan) {
-    if (item.action !== 'insert' && item.action !== 'replace') continue
+    if (!WRITABLE.has(item.action)) continue
     const routeForModel = moves.some((m) => m.route === item.route && m.model === item.model) ? `${item.route}--${item.catalogApi}` : item.route
     const result = upsertReasoningEfforts(text, routeForModel, item.model, item.target)
     if (result.text !== undefined) text = result.text
@@ -509,10 +668,17 @@ if (text !== original) {
   }
   if (validation.ok) {
     for (const item of plan) {
-      if (item.action !== 'insert' && item.action !== 'replace') continue
+      if (!WRITABLE.has(item.action)) continue
       const routeForModel = moves.some((m) => m.route === item.route && m.model === item.model) ? `${item.route}--${item.catalogApi}` : item.route
       const got = validation.doc?.['llm-pi-ai']?.providers?.[routeForModel]?.models?.find?.((m) => m?.id === item.model)?.reasoningEfforts
-      if (got === undefined) {
+      if (item.target === false) {
+        if (got !== false) {
+          validation = { ok: false, reason: `校验失败：\`${routeForModel}/${item.model}\` 应为显式 false` }
+          break
+        }
+        continue
+      }
+      if (got === undefined || got === false) {
         validation = { ok: false, reason: `校验失败：\`${routeForModel}/${item.model}\` 写入后读不到 reasoningEfforts` }
         break
       }
@@ -568,6 +734,8 @@ if (asJson) {
   }
 }
 
-const pending = actions.length > 0 || conflicts.length > 0
+// A model awaiting a decision is unfinished work, not a success: it must not be
+// possible to read a clean exit as "every model is covered".
+const pending = actions.length > 0 || conflicts.length > 0 || undecided.length > 0
 const broken = failures.length > 0 || !validation.ok
 process.exit(broken ? 1 : pending && !doApply ? 1 : 0)

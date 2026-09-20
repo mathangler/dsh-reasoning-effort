@@ -144,9 +144,13 @@ function scalar(value) {
   return /^[A-Za-z0-9_.\-]+$/.test(value) ? value : JSON.stringify(value)
 }
 
-/** Render the block, in escalation order, as the block style DSH itself writes. */
+/**
+ * Render the declaration as the block style DSH itself writes. `false` renders a
+ * single line, because a model that does not reason is a decision worth stating.
+ */
 export function renderEfforts(fieldIndent, efforts) {
   const pad = ' '.repeat(fieldIndent)
+  if (efforts === false) return [`${pad}reasoningEfforts: false`]
   const inner = ' '.repeat(fieldIndent + 2)
   const lines = [`${pad}reasoningEfforts:`]
   for (const level of THINKING_LEVELS) {
@@ -172,8 +176,12 @@ function trimTrailingBlank(lines, start, end) {
 /**
  * Ensure `models[<modelId>].reasoningEfforts` is exactly `efforts`.
  *
- * Idempotent: a map that already matches produces no change. A flow-style map
- * (`reasoningEfforts: { ... }`) on a single line is replaced wholesale.
+ * `efforts` is either a `{ level: wire }` object (with `null` allowed only for
+ * `off`) or `false`, which declares a non-reasoning model explicitly so that the
+ * capability never rests on a field's absence.
+ *
+ * Idempotent: a declaration that already matches produces no change. A flow-style
+ * map (`reasoningEfforts: { ... }`) on a single line is replaced wholesale.
  */
 export function upsertReasoningEfforts(text, routeId, modelId, efforts) {
   const parts = splitText(text)

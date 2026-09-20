@@ -1,6 +1,6 @@
 ---
 name: dsh-reasoning-effort
-description: Make every model on a hand-declared (custom) DSH provider route expose the thinking / reasoning-effort levels it actually has, and diagnose why a level picker is missing, empty, or rejects a level. Covers the pi-ai catalog-by-route-name rule, the per-model `reasoningEfforts` schema, the openai-responses / openai-completions / anthropic-messages protocol decision, the evidence rules that keep a declaration honest, and the two shipped scripts — `scripts/apply-reasoning-efforts.mjs` (a writer, dry run by default) and `scripts/check-reasoning-route.mjs` (a read-only validator). Built-in providers are never written. Works on Windows, macOS and Linux. Use when a model menu shows no 推理等级 / reasoning-effort submenu, when a level returns UNSUPPORTED_REASONING_EFFORT, when adding models under `llm-pi-ai.providers` in settings.yaml, or when the user asks 怎么调思考等级 / 调整思考强度 / 加推理等级 / reasoning effort / thinking budget.
+description: Make every model on a hand-declared (custom) DSH provider route expose the thinking / reasoning-effort levels it actually has, and diagnose why a level picker is missing, empty, or rejects a level. Every model on such a route ends up with an explicit declaration — a `reasoningEfforts` map, or an explicit `false` — because a missing field silently means "no reasoning"; a model nothing can source is put to the user as a question instead of being guessed at. Covers the pi-ai catalog-by-route-name rule, the per-model `reasoningEfforts` schema, the openai-responses / openai-completions / anthropic-messages protocol decision, the evidence rules that keep a declaration honest, and the two shipped scripts — `scripts/apply-reasoning-efforts.mjs` (a writer, dry run by default) and `scripts/check-reasoning-route.mjs` (a read-only validator). Built-in providers are never written. Works on Windows, macOS and Linux. Use when a model menu shows no 推理等级 / reasoning-effort submenu, when a level returns UNSUPPORTED_REASONING_EFFORT, when adding models under `llm-pi-ai.providers` in settings.yaml, or when the user asks 怎么调思考等级 / 调整思考强度 / 加推理等级 / reasoning effort / thinking budget.
 disable-model-invocation: true
 ---
 
@@ -16,7 +16,31 @@ Two things it deliberately does **not** do:
 - It never writes a built-in provider. Routes whose key *is* a pi-ai catalog
   provider id inherit their capabilities already, and `llm-deepseek`
   (provider id `deepseek-official`) has its own fixed four levels.
-- It never guesses a level. A model with no evidence is reported and left alone.
+- It never guesses a level. A model nothing can source is put to the user as a
+  question, never filled in with a plausible-looking guess.
+
+## The coverage contract
+
+Every model on a hand-declared route ends up in exactly one of three states, and
+**what the provider is called has nothing to do with it**:
+
+| State | How it lands in the file |
+| --- | --- |
+| supports reasoning | an explicit `reasoningEfforts` map with the levels it really has |
+| does not reason | an explicit `reasoningEfforts: false` |
+| not determinable | nothing written; the run **stops and asks**, and exits non-zero |
+
+The third row is the point: on a hand-declared route a missing field *means*
+"no reasoning", so an undeclared model is indistinguishable from a decision that
+it does not reason. Leaving it undone silently is therefore not an option — the
+run treats an open question as unfinished work (`exit 1`, with a `需要你决定`
+section) rather than as success, so a clean exit really does mean every model is
+covered.
+
+This is why the scan is over **every route under `llm-pi-ai.providers`** rather
+than over a list of provider names: add a provider or a model, run the skill
+again, and the new models are covered in the same pass. It is idempotent, so
+models that are already correct are left byte-for-byte alone.
 
 ## The one rule that explains most surprises
 
@@ -58,12 +82,14 @@ models are grouped by `api`, and each model carries `api`, `reasoning`,
 | --- | --- | --- |
 | probe | one minimal live request this model accepted | yes (`--probe`) |
 | vendor | the provider's own documentation, recorded in `data/reasoning-overrides.yaml` | yes |
+| user | an answer the user recorded via `--decide`, in `data/user-decisions.yaml` | yes |
 | catalog | the installed pi-ai catalog | yes |
-| unknown | nothing | **never** — reported only |
+| unknown | nothing | **never** — the run asks the user instead |
 
-`data/reasoning-overrides.yaml` is the patch layer for what the catalog lacks. It
-is small on purpose: every entry needs a `source` URL and an `evidence` label,
-and an entry that cannot cite one does not belong there.
+`data/reasoning-overrides.yaml` holds cited provider facts and
+`data/user-decisions.yaml` holds the answers to questions nothing else could
+settle. Both are *patch* layers: every entry needs a source or a recorded
+decision, and an entry that cannot cite one does not belong there.
 
 ## The schema
 
@@ -156,6 +182,14 @@ node scripts/apply-reasoning-efforts.mjs --fix            # also replace conflic
 node scripts/apply-reasoning-efforts.mjs --probe          # allow ONE minimal live request per model
 node scripts/apply-reasoning-efforts.mjs --strict --probe # write only probe-verified models
 node scripts/apply-reasoning-efforts.mjs --restore latest # roll back to the newest backup
+
+# record the answer to a question nothing could settle, then apply in one pass
+node scripts/apply-reasoning-efforts.mjs --decide 'my-route/my-model=low,high,max' --apply
+node scripts/apply-reasoning-efforts.mjs --decide 'my-route/my-model=false'   # it does not reason
+node scripts/apply-reasoning-efforts.mjs --decide 'my-route/my-model=skip'    # leave it, stop asking
+
+# see every outcome (declare / ask / non-reasoning) without touching a real install
+node scripts/apply-reasoning-efforts.mjs --settings scripts/fixture-settings.yaml
 ```
 
 What `--apply` guarantees, in order:
@@ -172,8 +206,37 @@ block is inserted or replaced. Untouched lines are written back byte for byte �
 can drop comments. Re-running the writer is idempotent: an already-correct map
 produces no change.
 
-Exit codes: `0` nothing to do, `1` changes pending or problems found, `2` the
-environment could not be read.
+Exit codes: `0` every model is covered, `1` something is pending or broken — a
+change to write, a conflict, a problem, **or a model still waiting on your
+decision** — and `2` the environment could not be read.
+
+### When nothing can be sourced: stop and ask
+
+The script does not guess, so a model with no evidence appears as
+`needs-decision` and the run exits non-zero. Do not paper over it — that is the
+signal to talk to the user:
+
+1. Read the `需要你决定` section of the report. For each model it lists the
+   **sibling candidates**: the same model id as *other* catalog providers
+   describe it, with their protocol and level set.
+2. Put the question to the user with the `ask_user_question` tool — one question
+   per model — offering: the sibling-derived level set (when there is one), "it
+   does not reason", "leave it undeclared for now", or "I will give the levels".
+3. Record the answer and apply in the same pass:
+
+   ```sh
+   node scripts/apply-reasoning-efforts.mjs --decide '<route>/<model>=low,high,max' --apply
+   ```
+
+4. Re-run to confirm a clean exit.
+
+Two cautions:
+
+- **A sibling is evidence for a question, not a licence to write.** The same
+  model served by another gateway can have different limits and a different wire
+  vocabulary — that is exactly why the script refuses to derive from it silently.
+- **A recorded decision is remembered**, so the same model is never asked about
+  twice. Delete its entry from `data/user-decisions.yaml` to be asked again.
 
 ### `scripts/check-reasoning-route.mjs` — the validator
 

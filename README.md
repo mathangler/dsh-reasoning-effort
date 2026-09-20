@@ -13,6 +13,12 @@ and the pane stays empty. This skill derives each model's real level set from th
 pi-ai catalog that ships with DSH, writes it as a per-model `reasoningEfforts`
 declaration, and refuses to write anything it cannot source.
 
+The guarantee is **coverage**, not best effort: every model on every hand-declared
+route ends up with either an explicit `reasoningEfforts` map or an explicit
+`reasoningEfforts: false`. A model nothing can source is never left silently
+undeclared — on such a route a missing field already *means* "no reasoning" — so
+the run stops, prints the question, and exits non-zero until you answer it.
+
 > 中文说明见 [README.zh.md](README.zh.md). What this revision changes, and why:
 > [FORK-NOTES.md](FORK-NOTES.md).
 
@@ -25,6 +31,7 @@ declaration, and refuses to write anything it cannot source.
 | Levels look wrong — e.g. a model that can no longer stop thinking is offered `Off` | The level set comes from evidence, not a template: a forced-thinking model gets no `off` key at all |
 | A config write is refused and the route vanishes from the picker | `check-reasoning-route.mjs` reports compat/protocol mismatches offline, before anything restarts |
 | Levels appear but reasoning never changes | `--probe` (opt-in) records whether the gateway accepts the value — and the docs are explicit that acceptance is not proof of behaviour |
+| A model is in no catalog and no doc mentions it | Nothing is written. The run stops and asks, offering what *other* gateways say about the same model id, plus the explicit alternatives |
 
 ## Install
 
@@ -66,6 +73,14 @@ node scripts/apply-reasoning-efforts.mjs --apply --fix      # also reconcile con
 node scripts/apply-reasoning-efforts.mjs --apply --probe    # allow 1 minimal live request per model
 node scripts/apply-reasoning-efforts.mjs --apply --strict --probe   # write only probe-verified models
 node scripts/apply-reasoning-efforts.mjs --restore latest   # roll back to the newest backup
+
+# answer a question nothing could settle, then apply in the same pass
+node scripts/apply-reasoning-efforts.mjs --decide 'my-route/my-model=low,high,max' --apply
+node scripts/apply-reasoning-efforts.mjs --decide 'my-route/my-model=false'   # it does not reason
+node scripts/apply-reasoning-efforts.mjs --decide 'my-route/my-model=skip'    # leave it, stop asking
+
+# see every outcome (declare / ask / non-reasoning) against a fixture, touching nothing real
+node scripts/apply-reasoning-efforts.mjs --settings scripts/fixture-settings.yaml
 ```
 
 A dry run against a typical gateway route looks like this:
@@ -82,8 +97,10 @@ every target model back to confirm. The edit is line-level and surgical, so
 untouched lines — including comments — survive byte for byte, and re-running is
 idempotent.
 
-Exit codes: `0` nothing to do, `1` changes pending or problems found, `2` the
-environment (install, `js-yaml`, or the settings document) could not be read.
+Exit codes: `0` every model is covered, `1` something is pending or broken — a
+change to write, a conflict, a problem, **or a model still waiting on your
+decision** — and `2` the environment (install, `js-yaml`, or the settings
+document) could not be read.
 
 ### Check a route
 
@@ -111,8 +128,9 @@ Every declaration carries a source, and the level set is never assumed:
 | --- | --- | --- |
 | `probe` | one minimal live request for this model was accepted | yes |
 | `vendor` | the provider's own documentation (`data/reasoning-overrides.yaml`, with a URL) | yes |
+| `user` | an answer you recorded with `--decide` (`data/user-decisions.yaml`) | yes |
 | `catalog` | the pi-ai catalog that ships with DSH | yes |
-| `unknown` | nothing sources this model | **no** — reported only |
+| `unknown` | nothing sources this model | **no** — the run asks you instead |
 
 This matters more than it sounds. `glm-5.3` and `glm-5.3-flash` **always** reason:
 the vendor removed the ability to disable thinking and errors on

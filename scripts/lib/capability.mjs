@@ -8,8 +8,9 @@
  * same capability explicitly, without inventing anything.
  *
  * Evidence levels, weakest to strongest:
- *   unknown  nothing sources this model
+ *   unknown  nothing sources this model — the writer stops and asks
  *   catalog  derived from the installed pi-ai catalog
+ *   user     a decision the user recorded in `data/user-decisions.yaml`
  *   vendor   a provider's own documentation, recorded in `data/reasoning-overrides.yaml`
  *   probe    a minimal live request was accepted for this exact model
  */
@@ -20,7 +21,7 @@ import { normalizeBaseUrl } from './dsh-install.mjs'
 /** pi-ai's levels, in escalation order. DSH rejects any other key. */
 export const THINKING_LEVELS = ['off', 'minimal', 'low', 'medium', 'high', 'xhigh', 'max']
 
-export const EVIDENCE_RANK = { unknown: 0, catalog: 1, vendor: 2, probe: 3 }
+export const EVIDENCE_RANK = { unknown: 0, catalog: 1, user: 2, vendor: 3, probe: 4 }
 
 /**
  * pi-ai's own rule (`getSupportedThinkingLevels`), including its asymmetry:
@@ -58,7 +59,7 @@ function wireFor(entry, level) {
 export function deriveFromCatalog(entry) {
   if (entry === undefined) return { reasoning: undefined, levels: [], declarable: false, reason: 'not in catalog' }
   if (entry.reasoning !== true) {
-    return { reasoning: false, levels: [], declarable: false, reason: 'catalog marks it as non-reasoning' }
+    return { reasoning: false, levels: [], declarable: false, evidence: 'catalog', reason: 'the catalog marks it as non-reasoning' }
   }
   const levels = supportedLevels(entry).map((level) => ({ level, wire: wireFor(entry, level) }))
   const beyondOff = levels.filter((l) => l.level !== 'off')
@@ -89,22 +90,35 @@ export function levelNames(levels) {
   return levels.map((l) => l.level)
 }
 
+/** The two patch layers, both under `data/`: cited provider facts, and user decisions. */
+export const OVERRIDE_FILES = ['reasoning-overrides.yaml', 'user-decisions.yaml']
+
 /**
- * Load `data/reasoning-overrides.yaml` — the hand-maintained patch layer for
- * models no catalog covers. An entry may only ever *add* knowledge; nothing in
- * it may be inferred.
+ * Load the patch layers. `reasoning-overrides.yaml` holds cited vendor facts;
+ * `user-decisions.yaml` holds answers the user gave when nothing could be sourced
+ * (see `--decide`). Both are *patch* layers: an entry may only ever add knowledge,
+ * and nothing in them is inferred.
  */
 export function loadOverrides(yaml, skillDir) {
-  const path = join(skillDir, 'data', 'reasoning-overrides.yaml')
-  if (!existsSync(path)) return { path, entries: [] }
-  let doc
-  try {
-    doc = yaml.load(readFileSync(path, 'utf8'))
-  } catch (error) {
-    return { path, entries: [], error: `could not parse: ${error.message}` }
+  const files = []
+  const entries = []
+  const errors = []
+  for (const name of OVERRIDE_FILES) {
+    const path = join(skillDir, 'data', name)
+    files.push(path)
+    if (!existsSync(path)) continue
+    let doc
+    try {
+      doc = yaml.load(readFileSync(path, 'utf8'))
+    } catch (error) {
+      errors.push(`${name}: ${error.message}`)
+      continue
+    }
+    for (const entry of Array.isArray(doc?.entries) ? doc.entries : []) {
+      if (typeof entry === 'object' && entry !== null) entries.push({ ...entry, __file: name })
+    }
   }
-  const entries = Array.isArray(doc?.entries) ? doc.entries.filter((e) => typeof e === 'object' && e !== null) : []
-  return { path, entries }
+  return { files, entries, errors }
 }
 
 /** Find the override covering this route + model, if any. */
@@ -168,4 +182,42 @@ export function matchCatalogProvider(catalog, profile, modelIds) {
   const candidates = [...catalog.providers.values()].filter((p) => modelIds.length > 0 && modelIds.every((m) => p.models.has(m)))
   if (candidates.length === 1) return { providerId: candidates[0].id, confidence: 'model-ids' }
   return undefined
+}
+
+/** Vendor prefixes seen in catalog ids: `minimax/minimax-m2.5`, `minimax.minimax-m2.5`, `MiniMaxAI/MiniMax-M2.5`. */
+function idVariants(id) {
+  const raw = String(id)
+  const parts = [raw, raw.split('/').pop(), raw.split('.').pop()]
+  return new Set(parts.filter((p) => typeof p === 'string' && p.length >= 3).map((p) => p.toLowerCase()))
+}
+
+/**
+ * The same model as *other* catalog providers know it.
+ *
+ * A custom route frequently carries a model whose exact entry is missing for that
+ * gateway while several other providers attest to the same id. That is honest
+ * context for the one question this skill refuses to answer on its own, so it is
+ * surfaced as candidates — never written, because another provider's limits are
+ * not this gateway's limits.
+ */
+export function siblingCandidates(catalog, modelId, excludeProviderId) {
+  const wanted = idVariants(modelId)
+  const out = []
+  for (const provider of catalog.providers.values()) {
+    if (provider.id === excludeProviderId) continue
+    for (const [id, entry] of provider.models) {
+      const variants = idVariants(id)
+      if (![...variants].some((v) => wanted.has(v))) continue
+      const derived = deriveFromCatalog(entry)
+      out.push({
+        providerId: provider.id,
+        id,
+        api: entry.api,
+        reasoning: entry.reasoning === true,
+        levels: derived.levels.map((l) => l.level),
+        explicitMap: entry.thinkingLevelMap !== undefined,
+      })
+    }
+  }
+  return out
 }

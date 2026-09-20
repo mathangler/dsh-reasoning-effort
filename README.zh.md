@@ -10,6 +10,11 @@
 本 skill 从 DSH 自带的 pi-ai 目录推导出每个模型的真实档位，写成按模型的 `reasoningEfforts` 声明，
 并且**拒绝写入任何没有依据的东西**。
 
+它保证的是**全覆盖**，而不是"尽力而为"：每条手写路由上的每个模型，最终都会得到显式声明——要么是
+`reasoningEfforts` 档位映射，要么是显式的 `reasoningEfforts: false`。判不出来的模型**绝不会**被
+静默留空（在这种路由上，"没写"本身就等于"不支持思考"，两者无法区分），技能会停下来把问题列出来，
+并在你回答之前以非零退出码结束。
+
 > 相对上一版的变更与理由见 [FORK-NOTES.md](FORK-NOTES.md)。English: [README.md](README.md)。
 
 ## 它做什么
@@ -21,6 +26,7 @@
 | 档位不对——例如一个已经不能关闭思考的模型却提供了 `Off` | 档位来自证据而不是模板：强制思考的模型**根本没有 `off` 键** |
 | 配置写入被拒，整条路由从选择器里消失 | `check-reasoning-route.mjs` 离线报告 compat/协议不匹配，重启之前就能抓住 |
 | 等级出现了，但思考深度没变化 | `--probe`（需显式开启）记录网关是否接受该取值——文档同时写明：**被接受 ≠ 真的生效** |
+| 模型既不在目录里，也没有任何文档提及 | 什么都不写。技能停下来提问，并给出**其他网关**对同名模型的描述，以及显式备选项 |
 
 ## 安装
 
@@ -60,6 +66,14 @@ node scripts/apply-reasoning-efforts.mjs --apply --fix      # 同时对冲突声
 node scripts/apply-reasoning-efforts.mjs --apply --probe    # 允许每个模型发 1 次最小请求
 node scripts/apply-reasoning-efforts.mjs --apply --strict --probe   # 只写实发已证实的模型
 node scripts/apply-reasoning-efforts.mjs --restore latest   # 回滚到最新备份
+
+# 记录一个"没人能定"的问题的答案，并在同一次调用里落盘
+node scripts/apply-reasoning-efforts.mjs --decide 'my-route/my-model=low,high,max' --apply
+node scripts/apply-reasoning-efforts.mjs --decide 'my-route/my-model=false'   # 它不支持思考
+node scripts/apply-reasoning-efforts.mjs --decide 'my-route/my-model=skip'    # 先不动，别再问我
+
+# 用夹具一次看全三种结局（声明 / 提问 / 非推理），完全不碰真实配置
+node scripts/apply-reasoning-efforts.mjs --settings scripts/fixture-settings.yaml
 ```
 
 典型网关路线的干跑输出：
@@ -74,7 +88,7 @@ node scripts/apply-reasoning-efforts.mjs --restore latest   # 回滚到最新备
 `llm-pi-ai.providers.*` 之外的任何路径则**拒绝写入** → 逐个模型读回比对。
 编辑是行级手术式的，未触碰的行（含注释）逐字节保留，重复运行是幂等的。
 
-退出码：`0` 无事可做，`1` 有待办或发现问题，`2` 环境（安装 / `js-yaml` / settings 文档）读不到。
+退出码：`0` 全部模型都已覆盖，`1` 有待办或有问题——要写入的改动、冲突、结构问题，**或仍在等你决定的模型**——`2` 环境（安装 / `js-yaml` / settings 文档）读不到。
 
 ### 检查路由
 
@@ -98,8 +112,9 @@ node scripts/check-reasoning-route.mjs --route my-route --json
 | --- | --- | --- |
 | `probe` | 该模型的一次最小实发请求被接受 | 会 |
 | `vendor` | 提供方自己的文档（记录在 `data/reasoning-overrides.yaml`，带 URL） | 会 |
+| `user` | 你通过 `--decide` 记录的决定（`data/user-decisions.yaml`） | 会 |
 | `catalog` | DSH 自带的 pi-ai 目录 | 会 |
-| `unknown` | 没有任何来源 | **不会**，只报告 |
+| `unknown` | 没有任何来源 | **不会**，转而问你 |
 
 这件事比听起来重要：`glm-5.3` 与 `glm-5.3-flash` **永远**在思考——厂商已经取消关闭思考的能力，
 并对 `thinking.type: "disabled"` 直接报错，所以它们的诚实声明是 `{low, high, max}`，

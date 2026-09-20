@@ -1,0 +1,8 @@
+# Decisions you recorded for models that neither the pi-ai catalog nor a provider
+# page covers. Written by `apply-reasoning-efforts.mjs --decide`; see SKILL.md.
+#
+#   reasoning: false          declare the model as non-reasoning
+#   decision: skip            leave it undeclared, and stop asking
+#   efforts: {low: low, ...}  declare exactly these levels
+version: 1
+entries: []
