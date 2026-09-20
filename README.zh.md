@@ -27,6 +27,7 @@
 | 配置写入被拒，整条路由从选择器里消失 | `check-reasoning-route.mjs` 离线报告 compat/协议不匹配，重启之前就能抓住 |
 | 等级出现了，但思考深度没变化 | `--probe`（需显式开启）记录网关是否接受该取值——文档同时写明：**被接受 ≠ 真的生效** |
 | 模型既不在目录里，也没有任何文档提及 | 什么都不写。技能停下来提问，并给出**其他网关**对同名模型的描述，以及显式备选项 |
+| 选择器里出现 `Default` 一项，实际含义是"提供方自己决定" | 技能写入路由级 `reasoning: high`（可配置）——这是唯一能去掉该项并钉住默认值的字段；因为有守卫，它会作用于该路由的每个模型 |
 
 ## 安装
 
@@ -72,6 +73,14 @@ node scripts/apply-reasoning-efforts.mjs --decide 'my-route/my-model=low,high,ma
 node scripts/apply-reasoning-efforts.mjs --decide 'my-route/my-model=false'   # 它不支持思考
 node scripts/apply-reasoning-efforts.mjs --decide 'my-route/my-model=skip'    # 先不动，别再问我
 
+# 记录"查到的厂商事实"（而不是你的决定）：必须带 URL，会写进带引用的那一层
+node scripts/apply-reasoning-efforts.mjs --evidence vendor --source <url> \
+  --decide 'my-route/my-model=low,high,max' --apply
+
+# 默认档位（默认 high）；skip 关闭路由级默认与 agent 默认的写入
+node scripts/apply-reasoning-efforts.mjs --default-effort xhigh --apply
+node scripts/apply-reasoning-efforts.mjs --default-effort skip --apply
+
 # 用夹具一次看全三种结局（声明 / 提问 / 非推理），完全不碰真实配置
 node scripts/apply-reasoning-efforts.mjs --settings scripts/fixture-settings.yaml
 ```
@@ -88,7 +97,7 @@ node scripts/apply-reasoning-efforts.mjs --settings scripts/fixture-settings.yam
 `llm-pi-ai.providers.*` 之外的任何路径则**拒绝写入** → 逐个模型读回比对。
 编辑是行级手术式的，未触碰的行（含注释）逐字节保留，重复运行是幂等的。
 
-退出码：`0` 全部模型都已覆盖，`1` 有待办或有问题——要写入的改动、冲突、结构问题，**或仍在等你决定的模型**——`2` 环境（安装 / `js-yaml` / settings 文档）读不到。
+退出码：`0` 全部模型都已覆盖，`1` 有待办或有问题——要写入的改动、冲突、结构问题、**仍在等你决定的模型，或路由默认档写不进去**——`2` 环境（安装 / `js-yaml` / settings 文档）读不到。
 
 ### 检查路由
 

@@ -13,37 +13,27 @@
 #
 # evidence: probe > vendor > catalog > unknown  (see scripts/lib/capability.mjs)
 version: 1
-
 entries:
-  # `deepseek-flash` is the current DeepSeek model name; the `deepseek-v4-flash*`
-  # ids are legacy aliases the vendor still accepts and serves from
-  # DeepSeek-V4.1-Flash. It appears in the gateway's `GET /v1/models` listing but
-  # in no catalog, no models.dev entry and no published endpoint table, so this
-  # entry rests on the vendor's own documentation.
   - match:
       baseURL: https://opencode.ai/zen/go/v1
       model: deepseek-flash
     reasoning: true
     efforts:
-      off: null
+      'off': null
       low: low
       high: high
       max: max
     evidence: vendor
     source: https://api-docs.deepseek.com/quick_start/pricing
     note: >-
-      Vendor documents thinking + non-thinking modes with reasoning_effort
-      none|low|high|max. The gateway's `/zen/go/v1` surface is undocumented, so
-      the level set is a passthrough claim: the levels are what the model
-      accepts, not a promise that this route forwards them.
-
-  # Alias of the same family, listed by the gateway's model endpoint.
+      Vendor documents thinking + non-thinking modes with reasoning_effort none|low|high|max. The gateway's `/zen/go/v1` surface is undocumented, so the level set is a passthrough claim: the levels
+      are what the model accepts, not a promise that this route forwards them.
   - match:
       baseURL: https://opencode.ai/zen/go/v1
       model: deepseek-v4.1-flash
     reasoning: true
     efforts:
-      off: null
+      'off': null
       low: low
       high: high
       max: max

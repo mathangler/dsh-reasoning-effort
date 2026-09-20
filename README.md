@@ -32,6 +32,7 @@ the run stops, prints the question, and exits non-zero until you answer it.
 | A config write is refused and the route vanishes from the picker | `check-reasoning-route.mjs` reports compat/protocol mismatches offline, before anything restarts |
 | Levels appear but reasoning never changes | `--probe` (opt-in) records whether the gateway accepts the value — and the docs are explicit that acceptance is not proof of behaviour |
 | A model is in no catalog and no doc mentions it | Nothing is written. The run stops and asks, offering what *other* gateways say about the same model id, plus the explicit alternatives |
+| The picker offers a "Default" row that quietly means "whatever the provider wants" | The writer adds the route-level `reasoning: high` (configurable), which is the only thing that removes that row and pins the default — guarded, because the field applies to every model on the route |
 
 ## Install
 
@@ -79,6 +80,14 @@ node scripts/apply-reasoning-efforts.mjs --decide 'my-route/my-model=low,high,ma
 node scripts/apply-reasoning-efforts.mjs --decide 'my-route/my-model=false'   # it does not reason
 node scripts/apply-reasoning-efforts.mjs --decide 'my-route/my-model=skip'    # leave it, stop asking
 
+# a searched fact rather than a decision: needs a citation, lands in the cited layer
+node scripts/apply-reasoning-efforts.mjs --evidence vendor --source <url> \
+  --decide 'my-route/my-model=low,high,max' --apply
+
+# the default level (default: high); "skip" turns off the route/default writes
+node scripts/apply-reasoning-efforts.mjs --default-effort xhigh --apply
+node scripts/apply-reasoning-efforts.mjs --default-effort skip --apply
+
 # see every outcome (declare / ask / non-reasoning) against a fixture, touching nothing real
 node scripts/apply-reasoning-efforts.mjs --settings scripts/fixture-settings.yaml
 ```
@@ -98,9 +107,9 @@ untouched lines — including comments — survive byte for byte, and re-running
 idempotent.
 
 Exit codes: `0` every model is covered, `1` something is pending or broken — a
-change to write, a conflict, a problem, **or a model still waiting on your
-decision** — and `2` the environment (install, `js-yaml`, or the settings
-document) could not be read.
+change to write, a conflict, a problem, **a model still waiting on your decision, or
+a route whose default could not be written** — and `2` the environment (install,
+`js-yaml`, or the settings document) could not be read.
 
 ### Check a route
 

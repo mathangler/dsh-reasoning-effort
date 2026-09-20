@@ -42,6 +42,38 @@ than over a list of provider names: add a provider or a model, run the skill
 again, and the new models are covered in the same pass. It is idempotent, so
 models that are already correct are left byte-for-byte alone.
 
+### No provider default: pin the level
+
+A reasoning model whose route declares no `reasoning:` is offered a **Default** row,
+and choosing it sends *nothing* — the upstream provider's own default then decides
+how hard the model thinks. DSH shows that row exactly when the model has no
+`defaultEffort`, and the only knob that creates one is the **route-level** field:
+
+```yaml
+llm-pi-ai:
+  providers:
+    my-gateway:
+      baseURL: https://…
+      api: openai-completions
+      reasoning: high        # becomes defaultEffort for every model on the route
+```
+
+So the writer, unless told otherwise, sets `reasoning: high` on every hand-declared
+route (`--default-effort <level>` to change it, `--default-effort skip` to disable)
+plus `agent-default-model.reasoningEffort: high` — the initial selection for **new**
+sessions. Two properties of the field are why this is guarded rather than
+unconditional:
+
+- it is **route-scoped**: the config schema has no per-model default, so one
+  non-compliant model forces the whole route to stay on Default;
+- a model on the route that does **not** support the level keeps its Default row,
+  and the adapter re-applies `profile.reasoning` at stream time — so *using* that
+  model fails with `UNSUPPORTED_REASONING_EFFORT`.
+
+The writer therefore writes a route default only when **every** model on that route
+declares the level, and otherwise reports the route as `未写` together with the
+models that blocked it, so the requirement is never silently half-met.
+
 ## The one rule that explains most surprises
 
 > **pi-ai's model metadata is looked up by the route name itself, and the lookup
@@ -188,6 +220,15 @@ node scripts/apply-reasoning-efforts.mjs --decide 'my-route/my-model=low,high,ma
 node scripts/apply-reasoning-efforts.mjs --decide 'my-route/my-model=false'   # it does not reason
 node scripts/apply-reasoning-efforts.mjs --decide 'my-route/my-model=skip'    # leave it, stop asking
 
+# record a *searched* fact instead of a decision: needs a citation, lands in the
+# cited layer rather than the decisions layer
+node scripts/apply-reasoning-efforts.mjs --evidence vendor --source <url> \
+  --decide 'my-route/my-model=low,high,max' --apply
+
+# the default level (default: high). "skip" turns off the route/default writes
+node scripts/apply-reasoning-efforts.mjs --default-effort xhigh --apply
+node scripts/apply-reasoning-efforts.mjs --default-effort skip --apply
+
 # see every outcome (declare / ask / non-reasoning) without touching a real install
 node scripts/apply-reasoning-efforts.mjs --settings scripts/fixture-settings.yaml
 ```
@@ -206,35 +247,48 @@ block is inserted or replaced. Untouched lines are written back byte for byte �
 can drop comments. Re-running the writer is idempotent: an already-correct map
 produces no change.
 
-Exit codes: `0` every model is covered, `1` something is pending or broken — a
-change to write, a conflict, a problem, **or a model still waiting on your
-decision** — and `2` the environment could not be read.
+Exit codes: `0` every model is covered (and no route default was blocked), `1`
+something is pending or broken — a change to write, a conflict, a problem, **a model
+still waiting on your decision, or a route whose default could not be written** — and
+`2` the environment could not be read.
 
-### When nothing can be sourced: stop and ask
+### When the catalog has nothing: search, then ask
 
-The script does not guess, so a model with no evidence appears as
-`needs-decision` and the run exits non-zero. Do not paper over it — that is the
-signal to talk to the user:
+The writer does not guess, so a model with no evidence becomes `needs-decision` and
+the run exits non-zero. Work the question in this order:
 
-1. Read the `需要你决定` section of the report. For each model it lists the
-   **sibling candidates**: the same model id as *other* catalog providers
-   describe it, with their protocol and level set.
-2. Put the question to the user with the `ask_user_question` tool — one question
-   per model — offering: the sibling-derived level set (when there is one), "it
-   does not reason", "leave it undeclared for now", or "I will give the levels".
-3. Record the answer and apply in the same pass:
+1. **Search and verify.** Look the model up — the provider's own documentation first
+   (`reasoning_effort`, `thinking:{type}`, `enable_thinking`, `thinking_budget`,
+   `output_config.effort`), then aggregator catalogs such as models.dev. Record a
+   citable answer *with its URL*, and let the writer apply it:
 
    ```sh
-   node scripts/apply-reasoning-efforts.mjs --decide '<route>/<model>=low,high,max' --apply
+   node scripts/apply-reasoning-efforts.mjs --evidence vendor --source <url> \
+     --decide '<route>/<model>=low,high,max' --apply
    ```
 
-4. Re-run to confirm a clean exit.
+2. **Only if that finds nothing, ask the user** with the `ask_user_question` tool —
+   one question per model — offering the concrete alternatives the report already
+   computed from sibling attestations:
+
+   - the **intersection** of what other gateways declare (most likely to be accepted),
+   - the **majority** set (with its count),
+   - the **union** (most complete, but may contain a value one gateway rejects),
+   - "it does not reason",
+   - "leave it undeclared for now".
+
+3. **Record the answer and apply in the same pass** (omit `--evidence vendor` for a
+   user decision), then re-run to confirm `exit 0`:
+
+   ```sh
+   node scripts/apply-reasoning-efforts.mjs --decide '<route>/<model>=off,low,high,max' --apply
+   ```
 
 Two cautions:
 
-- **A sibling is evidence for a question, not a licence to write.** The same
-  model served by another gateway can have different limits and a different wire
-  vocabulary — that is exactly why the script refuses to derive from it silently.
+- **A sibling is evidence for a question, not a licence to write.** The same model
+  served by another gateway can have different limits and a different wire
+  vocabulary — which is exactly why the writer refuses to derive from it silently.
 - **A recorded decision is remembered**, so the same model is never asked about
   twice. Delete its entry from `data/user-decisions.yaml` to be asked again.
 

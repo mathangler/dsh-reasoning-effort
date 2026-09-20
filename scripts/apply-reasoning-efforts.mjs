@@ -20,7 +20,7 @@ import { copyFileSync, existsSync, mkdirSync, readFileSync, readdirSync, statSyn
 import { basename, dirname, join, resolve } from 'node:path'
 import { fileURLToPath } from 'node:url'
 
-import { analyzeLine, children, joinText, listRoutes, locateRoute, moveModelItem, createRoute, splitText, upsertReasoningEfforts } from './lib/yaml-edit.mjs'
+import { analyzeLine, children, joinText, listRoutes, locateRoute, moveModelItem, createRoute, splitText, upsertNamespaceScalar, upsertReasoningEfforts, upsertRouteScalar } from './lib/yaml-edit.mjs'
 import {
   THINKING_LEVELS,
   deriveFromCatalog,
@@ -117,13 +117,26 @@ const reportPath = flagValue('--report', undefined)
 // It is a recorder, not a guesser — the value has to come from the user.
 const decideSpecs = flagAll('--decide')
 if (decideSpecs.length > 0) {
-  const decisionsPath = join(SKILL_DIR, 'data', 'user-decisions.yaml')
+  const evidenceKind = flagValue('--evidence', 'user')
+  const sourceUrl = flagValue('--source', undefined)
+  if (evidenceKind !== 'user' && evidenceKind !== 'vendor') {
+    console.error(`--evidence must be "user" or "vendor", got: ${evidenceKind}`)
+    process.exit(2)
+  }
+  if (evidenceKind === 'vendor' && (sourceUrl === undefined || sourceUrl.length === 0)) {
+    console.error('--evidence vendor requires --source <url>: a vendor fact without a citation does not belong in the layer')
+    process.exit(2)
+  }
+  // A searched fact belongs in the cited layer; an answer to a question belongs in
+  // the decisions layer. Keeping them apart is what makes the evidence auditable.
+  const layerName = evidenceKind === 'vendor' ? 'reasoning-overrides.yaml' : 'user-decisions.yaml'
+  const layerPath = join(SKILL_DIR, 'data', layerName)
   const yamlForDecisions = loadYaml([SKILL_DIR])
   if (yamlForDecisions === undefined || typeof yamlForDecisions.dump !== 'function') {
     console.error('could not load js-yaml to record a decision')
     process.exit(2)
   }
-  const existing = existsSync(decisionsPath) ? yamlForDecisions.load(readFileSync(decisionsPath, 'utf8')) : undefined
+  const existing = existsSync(layerPath) ? yamlForDecisions.load(readFileSync(layerPath, 'utf8')) : undefined
   const entries = Array.isArray(existing?.entries) ? existing.entries.filter((e) => typeof e === 'object' && e !== null) : []
   const recorded = []
   for (const spec of decideSpecs) {
@@ -139,14 +152,15 @@ if (decideSpecs.length > 0) {
     const entry = {
       match: { provider: routeId, model: modelId },
       decidedAt: new Date().toISOString().slice(0, 10),
-      evidence: 'user',
+      evidence: evidenceKind,
     }
+    if (sourceUrl !== undefined) entry.source = sourceUrl
     if (value === 'skip') {
       entry.decision = 'skip'
-      entry.note = 'user decision: leave undeclared'
+      entry.note = `${evidenceKind} decision: leave undeclared`
     } else if (value === 'false' || value === 'no' || value === 'none') {
       entry.reasoning = false
-      entry.note = 'user decision: non-reasoning model'
+      entry.note = `${evidenceKind} decision: non-reasoning model`
     } else {
       const efforts = {}
       for (const token of value.split(',').map((t) => t.trim()).filter((t) => t.length > 0)) {
@@ -163,25 +177,24 @@ if (decideSpecs.length > 0) {
       }
       entry.reasoning = true
       entry.efforts = efforts
-      entry.note = 'user decision'
+      entry.note = `${evidenceKind} decision`
     }
     const at = entries.findIndex((e) => e?.match?.provider === routeId && e?.match?.model === modelId)
     if (at === -1) entries.push(entry)
     else entries[at] = { ...entries[at], ...entry }
-    recorded.push(`${routeId}/${modelId} = ${value}`)
+    recorded.push(`${routeId}/${modelId} = ${value}  [${evidenceKind}${sourceUrl === undefined ? '' : ` via ${sourceUrl}`}]`)
   }
-  const header = [
-    '# Decisions recorded for models that neither the pi-ai catalog nor a provider',
-    '# page covers. Written by `apply-reasoning-efforts.mjs --decide`; see SKILL.md.',
-    '#',
-    '#   reasoning: false          declare the model as non-reasoning',
-    '#   decision: skip            leave it undeclared, and stop asking',
-    '#   efforts: {low: low, ...}  declare exactly these levels',
-    '',
-  ].join('\n')
-  mkdirSync(dirname(decisionsPath), { recursive: true })
-  writeFileSync(decisionsPath, header + yamlForDecisions.dump({ version: 1, entries }, { lineWidth: 200, noRefs: true }), 'utf8')
-  console.log(`recorded ${recorded.length} decision(s) in ${decisionsPath}:`)
+  // Keep whatever documentation the layer already carries: only the data part is
+  // regenerated, so the explanation at the top of the file survives.
+  let header = `# Recorded by \`apply-reasoning-efforts.mjs --decide --evidence ${evidenceKind}\`; see SKILL.md.\n`
+  if (existsSync(layerPath)) {
+    const prior = readFileSync(layerPath, 'utf8')
+    const at = prior.search(/^version:/m)
+    if (at > 0) header = prior.slice(0, at)
+  }
+  mkdirSync(dirname(layerPath), { recursive: true })
+  writeFileSync(layerPath, header + yamlForDecisions.dump({ version: 1, entries }, { lineWidth: 200, noRefs: true }), 'utf8')
+  console.log(`recorded ${recorded.length} ${evidenceKind} fact(s) in ${layerPath}:`)
   for (const line of recorded) console.log(`  - ${line}`)
   console.log('')
 }
@@ -416,10 +429,90 @@ const skipped = plan.filter((i) => i.action === 'skip-strict')
 const undecided = plan.filter((i) => i.action === 'needs-decision')
 const byDecision = plan.filter((i) => i.action === 'skip-by-decision')
 
+// ------------------------------------------------------------------ defaults
+// A defined `defaultEffort` is what makes the picker drop its "Default" entry, and
+// the only source of one is the route-level `reasoning:` field. It applies to
+// *every* model on the route — `resolveReasoningLevel` throws for a model that does
+// not offer the level — so it may only be written when every model on the route
+// genuinely offers it. Without this, a model sits at "Default" and the gateway's own
+// default decides how hard it thinks.
+const defaultLevel = flagValue('--default-effort', 'high')
+const wantDefault = !['skip', 'none', 'no', 'off'].includes(defaultLevel)
+if (wantDefault && !THINKING_LEVELS.includes(defaultLevel)) {
+  console.error(`--default-effort must be a pi-ai level or "skip", got: ${defaultLevel}`)
+  process.exit(2)
+}
+const offersLevel = (item) =>
+  typeof item?.target === 'object' && item.target !== null && Object.prototype.hasOwnProperty.call(item.target, defaultLevel)
+
+const routeDefaults = []
+if (wantDefault) {
+  for (const route of routes) {
+    if (catalogProviderIds.has(route.id)) continue
+    const items = plan.filter((i) => i.route === route.id)
+    if (items.length === 0) continue
+    const blocked = items.filter((i) => !offersLevel(i))
+    const current = doc?.['llm-pi-ai']?.providers?.[route.id]?.reasoning
+    const entry = { route: route.id, current, level: defaultLevel, action: 'none', why: undefined }
+    if (current === defaultLevel) entry.why = `已经是 reasoning: ${defaultLevel}`
+    else if (blocked.length > 0) {
+      entry.action = 'blocked'
+      entry.why = blocked
+        .map((i) =>
+          i.target === false
+            ? `\`${i.model}\` 不支持思考`
+            : i.action === 'needs-decision'
+              ? `\`${i.model}\` 档位未确定`
+              : i.action === 'skip-by-decision'
+                ? `\`${i.model}\` 按你的决定未声明`
+                : `\`${i.model}\` 的真实档位里没有 ${defaultLevel}`,
+        )
+        .join('、')
+    } else if (current !== undefined) {
+      entry.action = doFix ? 'replace' : 'conflict'
+      entry.why = `路由已经写着 reasoning: ${current}`
+    } else entry.action = 'insert'
+    routeDefaults.push(entry)
+  }
+}
+
+const agentDefault = { action: 'none', why: undefined }
+if (wantDefault) {
+  const section = doc?.['agent-default-model']
+  if (section === undefined) agentDefault.why = 'settings 里没有 `agent-default-model` 段（不新建，避免写出不合 schema 的段）'
+  else {
+    const item = plan.find((i) => i.route === section.provider && i.model === section.model)
+    if (section.reasoningEffort === defaultLevel) agentDefault.why = `已经是 ${defaultLevel}`
+    else if (item === undefined) agentDefault.why = `默认模型 \`${section.provider}/${section.model}\` 不在自定义路由上（目录路线或内置提供方），不越界修改`
+    else if (!offersLevel(item)) agentDefault.why = `默认模型 \`${section.provider}/${section.model}\` 的真实档位里没有 ${defaultLevel}`
+    else agentDefault.action = section.reasoningEffort === undefined ? 'insert' : doFix ? 'replace' : 'conflict'
+  }
+}
+
 function levelsOf(map) {
   if (map === undefined) return '(无)'
   if (map === false) return '(非推理模型)'
   return THINKING_LEVELS.filter((l) => Object.prototype.hasOwnProperty.call(map, l)).join(' / ')
+}
+
+/**
+ * Turn sibling attestations into the concrete choices to put to the user: the
+ * intersection (most likely to be accepted everywhere), the most common exact set,
+ * and the union (most complete, but may include a value one gateway rejects).
+ */
+function levelPlans(candidates) {
+  const sets = candidates.filter((c) => c.reasoning && c.levels.length > 0).map((c) => c.levels)
+  if (sets.length === 0) return undefined
+  const order = (levels) => THINKING_LEVELS.filter((l) => levels.includes(l))
+  const intersection = order(sets.reduce((a, b) => a.filter((l) => b.includes(l))))
+  const union = order([...new Set(sets.flat())])
+  const counts = new Map()
+  for (const set of sets) {
+    const key = order(set).join(',')
+    counts.set(key, (counts.get(key) ?? 0) + 1)
+  }
+  const [majority, majorityCount] = [...counts.entries()].sort((a, b) => b[1] - a[1])[0]
+  return { intersection, majority: majority.split(',').filter((l) => l.length > 0), majorityCount, union, samples: sets.length }
 }
 
 function buildReport() {
@@ -526,6 +619,31 @@ function buildReport() {
     out.push('')
   }
 
+  if (wantDefault) {
+    out.push('## 默认档位（消除选择器里的 "Default"）')
+    out.push('')
+    out.push(`目标档位：**${defaultLevel}**（\`--default-effort <level>\` 可改，\`--default-effort skip\` 关闭本节的全部写入）。`)
+    out.push('')
+    out.push('路由级 `reasoning:` 是 `defaultEffort` 的唯一来源，而选择器只在 `defaultEffort === undefined` 时才插入 "Default" 项——写上它，既去掉"默认"，也把默认值定成目标档。代价是它作用于该路由的**每个**模型，遇到不支持该档的模型时请求会直接报 `UNSUPPORTED_REASONING_EFFORT`，所以只在全路由都支持时才写。')
+    out.push('')
+    for (const entry of routeDefaults) {
+      const mark =
+        entry.action === 'insert' ? '**写入**'
+        : entry.action === 'replace' ? '**改写**（--fix）'
+        : entry.action === 'conflict' ? '冲突（加 `--fix`）'
+        : entry.action === 'blocked' ? '**未写**'
+        : '无需改动'
+      out.push(`- \`${entry.route}\`：${mark}${entry.why === undefined ? '' : ` —— ${entry.why}`}`)
+    }
+    const agentMark =
+      agentDefault.action === 'none' ? '无需改动'
+      : agentDefault.action === 'insert' ? '**写入**'
+      : agentDefault.action === 'replace' ? '**改写**（--fix）'
+      : '冲突（加 `--fix`）'
+    out.push(`- \`agent-default-model.reasoningEffort\`（**新建**会话的默认档位）：${agentMark}${agentDefault.why === undefined ? '' : ` —— ${agentDefault.why}`}`)
+    out.push('')
+  }
+
   if (undecided.length > 0) {
     out.push('## 需要你决定 —— 技能不会替你猜')
     out.push('')
@@ -546,11 +664,24 @@ function buildReport() {
       } else {
         out.push('- 同族旁证：无（目录里没有任何 provider 收录过这个 id）')
       }
-      out.push('- 可选答案：')
-      const suggestion = candidates.find((c) => c.reasoning && c.levels.length > 0)
-      if (suggestion !== undefined) {
-        out.push(`  - 按同族旁证声明：\`--decide '${item.route}/${item.model}=${suggestion.levels.join(',')}'\``)
+      const plans = levelPlans(candidates)
+      const spec = (levels) => `--decide '${item.route}/${item.model}=${levels.join(',')}'`
+      if (plans !== undefined) {
+        out.push(`- 推荐方案（来自 ${plans.samples} 条同族旁证，选一个告诉我即可）：`)
+        const seen = new Set()
+        const offer = (levels, why) => {
+          const key = levels.join(',')
+          if (levels.length === 0 || seen.has(key)) return
+          seen.add(key)
+          out.push(`  - \`${spec(levels)}\` —— ${why}`)
+        }
+        offer(plans.intersection, '交集：最保守，也最可能被真正接受')
+        offer(plans.majority, `多数派：${plans.samples} 条里有 ${plans.majorityCount} 条是这一套`)
+        offer(plans.union, '并集：最全，但可能含个别网关不认的档位')
+      } else {
+        out.push('- 推荐档位：**没有可推荐的**——目录里没有任何 provider 收录过这个 id。建议先实测，或者你直接给档位。')
       }
+      out.push('- 其他选项：')
       out.push(`  - 声明为不支持思考：\`--decide '${item.route}/${item.model}=false'\``)
       out.push(`  - 暂不声明、技能不再来问：\`--decide '${item.route}/${item.model}=skip'\``)
       out.push(`  - 你自己给档位：\`--decide '${item.route}/${item.model}=<${THINKING_LEVELS.join('|')}>'\``)
@@ -563,10 +694,23 @@ function buildReport() {
 
   out.push('## 观察与警告')
   out.push('')
-  if (warnings.length === 0 && conflicts.length === 0 && skipped.length === 0) out.push('- 无。')
+  // Entries that no longer match a configured model. Harmless, but worth pruning
+  // after a provider or a model is deleted — which is the only cleaning up that a
+  // deletion ever needs, because declarations live on the model entries themselves.
+  const configuredKeys = new Set(plan.map((i) => `${i.route}/${i.model}`))
+  const staleEntries = overrides.entries.filter(
+    (e) =>
+      typeof e?.match?.provider === 'string' &&
+      typeof e?.match?.model === 'string' &&
+      !configuredKeys.has(`${e.match.provider}/${e.match.model}`),
+  )
+  if (warnings.length === 0 && conflicts.length === 0 && skipped.length === 0 && staleEntries.length === 0) out.push('- 无。')
   for (const w of warnings) out.push(`- ${w}`)
   for (const c of conflicts) out.push(`- 冲突：\`${c.route}/${c.model}\` ${c.note}。默认不动，加 \`--fix\` 才对齐。`)
   for (const s of skipped) out.push(`- 未写入：\`${s.route}/${s.model}\`（${s.note}）`)
+  if (staleEntries.length > 0) {
+    out.push(`- 以下记录对应的模型已不在配置里（删掉 provider 或模型之后就是这样）。留着无害，可自行清理：${staleEntries.map((e) => `\`${e.match.provider}/${e.match.model}\``).join('、')}`)
+  }
   out.push('- `openai-completions` 路线上发不出任何会话头：`sendSessionAffinityHeaders` 在 DSH 里是 `withhold`，只能由 pi-ai 目录设置，而 opencode-go 的 completions 条目都没带。声明思考强度**不会**改变这一点。')
   out.push('')
 
@@ -628,6 +772,21 @@ if (doApply) {
     if (result.changed) applied.push(`${result.action === 'inserted' ? '新增' : '改写'} \`${routeForModel}/${item.model}\` → ${levelsOf(item.target)}`)
     else if (!result.unchanged) failures.push(`\`${item.model}\`：${result.reason}`)
   }
+
+  // Route-level default: this is what removes the picker's "Default" entry.
+  for (const entry of routeDefaults) {
+    if (entry.action !== 'insert' && entry.action !== 'replace') continue
+    const written = upsertRouteScalar(text, entry.route, 'reasoning', entry.level)
+    if (written.text !== undefined) text = written.text
+    if (written.changed) applied.push(`路线 \`${entry.route}\` 写入 \`reasoning: ${entry.level}\`（选择器不再出现 "Default"）`)
+    else if (!written.unchanged) failures.push(`\`${entry.route}\` 路由默认档位：${written.reason}`)
+  }
+  if (agentDefault.action === 'insert' || agentDefault.action === 'replace') {
+    const written = upsertNamespaceScalar(text, 'agent-default-model', 'reasoningEffort', defaultLevel)
+    if (written.text !== undefined) text = written.text
+    if (written.changed) applied.push(`\`agent-default-model.reasoningEffort\` 设为 ${defaultLevel}（新建会话即默认 ${defaultLevel}）`)
+    else if (!written.unchanged) failures.push(`agent-default-model.reasoningEffort：${written.reason}`)
+  }
 }
 
 // ------------------------------------------------------------------ validation
@@ -661,7 +820,7 @@ if (text !== original) {
     const changedPaths = []
     for (const [path, value] of after) if (!before.has(path) || before.get(path) !== value) changedPaths.push(path)
     for (const [path] of before) if (!after.has(path)) changedPaths.push(`${path} (removed)`)
-    const allowed = /^llm-pi-ai\.providers\./
+    const allowed = /^(llm-pi-ai\.providers\.|agent-default-model\.)/
     const stray = changedPaths.filter((p) => !allowed.test(p))
     validation = { ok: stray.length === 0, changedPaths, stray, doc: reparsed }
     if (stray.length > 0) validation.reason = `编辑越界，改到了预期之外的路径：${stray.join(', ')}`
@@ -687,6 +846,16 @@ if (text !== original) {
         validation = { ok: false, reason: `校验失败：\`${routeForModel}/${item.model}\` 读回的值与目标不符` }
         break
       }
+    }
+    for (const entry of routeDefaults) {
+      if (!validation.ok) break
+      if (entry.action !== 'insert' && entry.action !== 'replace') continue
+      const got = validation.doc?.['llm-pi-ai']?.providers?.[entry.route]?.reasoning
+      if (got !== entry.level) validation = { ok: false, reason: `校验失败：\`${entry.route}\` 的 reasoning 读回为 ${String(got)}` }
+    }
+    if (validation.ok && (agentDefault.action === 'insert' || agentDefault.action === 'replace')) {
+      const got = validation.doc?.['agent-default-model']?.reasoningEffort
+      if (got !== defaultLevel) validation = { ok: false, reason: `校验失败：agent-default-model.reasoningEffort 读回为 ${String(got)}` }
     }
   }
 }
@@ -735,7 +904,17 @@ if (asJson) {
 }
 
 // A model awaiting a decision is unfinished work, not a success: it must not be
-// possible to read a clean exit as "every model is covered".
-const pending = actions.length > 0 || conflicts.length > 0 || undecided.length > 0
+// possible to read a clean exit as "every model is covered". A route whose default
+// could not be written counts too — that is the requirement "no Default entry"
+// going unmet, and the user is the one who can resolve it (split the route, or
+// accept the provider default).
+const pending =
+  actions.length > 0 ||
+  conflicts.length > 0 ||
+  undecided.length > 0 ||
+  routeDefaults.some((e) => e.action === 'insert' || e.action === 'replace' || e.action === 'conflict' || e.action === 'blocked') ||
+  agentDefault.action === 'insert' ||
+  agentDefault.action === 'replace' ||
+  agentDefault.action === 'conflict'
 const broken = failures.length > 0 || !validation.ok
 process.exit(broken ? 1 : pending && !doApply ? 1 : 0)

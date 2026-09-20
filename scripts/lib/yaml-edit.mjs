@@ -295,6 +295,57 @@ export function createRoute(text, routeId, { api, baseURL, apiKeyEnv, displayNam
   return { changed: true, text: joinText(parts), indent }
 }
 
+/**
+ * Set a scalar field belonging to a route block, e.g. `reasoning: high`.
+ *
+ * This is the only knob that produces a `defaultEffort`, and a defined
+ * `defaultEffort` is what removes the picker's "Default" entry — see SKILL.md.
+ * It is inserted before `models:` so the route still reads top-down.
+ */
+export function upsertRouteScalar(text, routeId, key, value) {
+  const parts = splitText(text)
+  const { lines } = parts
+  const route = locateRoute(lines, routeId)
+  if (route === undefined) return { changed: false, reason: `route "${routeId}" not found` }
+  // The route's own key sits at `routeIndent`; its fields are one level deeper.
+  const fieldIndent = childIndentOf(lines, route.keyLine + 1, route.end) ?? route.routeIndent + 2
+  return upsertChildScalar(parts, route.keyLine, route.end, fieldIndent, key, value, 'models')
+}
+
+/** Set a scalar field inside a top-level namespace block, e.g. `agent-default-model`. */
+export function upsertNamespaceScalar(text, namespace, key, value) {
+  const parts = splitText(text)
+  const { lines } = parts
+  const ns = childByKey(lines, 0, lines.length, namespace)
+  if (ns === undefined) return { changed: false, reason: `namespace "${namespace}" not found` }
+  const indent = childIndentOf(lines, ns.keyLine + 1, ns.end)
+  if (indent === undefined) return { changed: false, reason: `namespace "${namespace}" has no fields to sit beside` }
+  return upsertChildScalar(parts, ns.keyLine, ns.end, indent, key, value)
+}
+
+function upsertChildScalar(parts, blockStart, blockStop, indent, key, value, beforeKey) {
+  const { lines } = parts
+  const wanted = `${key}: ${value}`
+  for (let i = blockStart + 1; i < blockStop; i++) {
+    const info = analyzeLine(lines[i])
+    if (info.itemIndent !== undefined || info.indent !== indent || info.key !== key) continue
+    if (lines[i].trim() === wanted) return { changed: false, reason: 'already correct', unchanged: true }
+    lines[i] = `${' '.repeat(indent)}${wanted}`
+    return { changed: true, text: joinText(parts), action: 'replaced' }
+  }
+  let at
+  if (beforeKey !== undefined) {
+    const anchor = childByKey(lines, blockStart + 1, blockStop, beforeKey)
+    at = anchor === undefined ? undefined : anchor.start
+  }
+  if (at === undefined) {
+    at = blockStop
+    while (at > blockStart + 1 && isBlank(lines[at - 1])) at--
+  }
+  lines.splice(at, 0, `${' '.repeat(indent)}${wanted}`)
+  return { changed: true, text: joinText(parts), action: 'inserted' }
+}
+
 /** Every route under `llm-pi-ai.providers`, as `{ id, api, baseURL, modelIds }`. */
 export function listRoutes(lines) {
   const top = childByKey(lines, 0, lines.length, 'llm-pi-ai')
