@@ -65,6 +65,9 @@ if (has('--help') || has('-h')) {
   --probe             allow ONE minimal live request per model, to record evidence
   --fix-routes        move models whose catalog protocol differs from their route's api
   --restore <ref>     restore "latest" backup, or a named backup file, then exit
+  --timestamped-backup
+                      name each backup with a timestamp instead of overwriting the
+                      single settings.yaml.bak-reasoning-efforts
   --report <path>     also write the markdown report to this file
   --json              print machine-readable JSON instead of the markdown report
 
@@ -74,6 +77,13 @@ Exit codes: 0 nothing to do · 1 changes pending or problems found · 2 environm
 
 // --------------------------------------------------------------------- restore
 const settingsPath = resolve(flagValue('--settings', defaultSettingsPath()))
+// A single backup file, overwritten on every write, holding the state from *before* the
+// last operation — an apply or a restore. That makes it a one-step undo rather than an
+// archive, which is what the document needs: it is regenerated from the configuration on
+// every run, so a pile of timestamped copies only accumulates noise. Pass
+// `--timestamped-backup` to get the timestamped names back.
+const backupFile = `${settingsPath}.bak-reasoning-efforts`
+const nextBackupFile = () => (has('--timestamped-backup') ? `${backupFile}-${stampName()}` : backupFile)
 const restoreRef = flagValue('--restore', undefined)
 if (restoreRef !== undefined) {
   const dirName = dirname(settingsPath)
@@ -91,12 +101,15 @@ if (restoreRef !== undefined) {
     console.error(`no backup to restore (looked for ${basename(settingsPath)}.bak* in ${dirName})`)
     process.exit(2)
   }
-  const stamp = stampName()
-  const guard = `${settingsPath}.bak-before-restore-${stamp}`
+  // Read before writing: with a single backup file the guard and the source are the same
+  // path, which is intentional — afterwards the file holds whatever settings held, so a
+  // second restore toggles back.
+  const bytes = readFileSync(source)
+  const guard = nextBackupFile()
   copyFileSync(settingsPath, guard)
-  copyFileSync(source, settingsPath)
+  writeFileSync(settingsPath, bytes)
   console.log(`restored : ${source}`)
-  console.log(`previous : ${guard}`)
+  console.log(`backup   : ${guard} now holds the state this restore replaced`)
   console.log('A running dsh process may need a fresh start to pick this up.')
   process.exit(0)
 }
@@ -874,7 +887,7 @@ if (text !== original) {
 
 let backupPath
 if (doApply && text !== original && validation.ok) {
-  backupPath = `${settingsPath}.bak-reasoning-efforts-${stampName()}`
+  backupPath = nextBackupFile()
   copyFileSync(settingsPath, backupPath)
   writeFileSync(settingsPath, text, 'utf8')
 }

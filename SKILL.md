@@ -236,7 +236,8 @@ node scripts/apply-reasoning-efforts.mjs --route my-route # limit to one route
 node scripts/apply-reasoning-efforts.mjs --fix            # also replace conflicting declarations
 node scripts/apply-reasoning-efforts.mjs --probe          # allow ONE minimal live request per model
 node scripts/apply-reasoning-efforts.mjs --strict --probe # write only probe-verified models
-node scripts/apply-reasoning-efforts.mjs --restore latest # roll back to the newest backup
+node scripts/apply-reasoning-efforts.mjs --restore latest # roll back to the single backup
+node scripts/apply-reasoning-efforts.mjs --timestamped-backup --apply # keep timestamped copies instead
 
 # record the answer to a question nothing could settle, then apply in one pass
 node scripts/apply-reasoning-efforts.mjs --decide 'my-route/my-model=low,high,max' --apply
@@ -258,7 +259,7 @@ node scripts/apply-reasoning-efforts.mjs --settings scripts/fixture-settings.yam
 
 What `--apply` guarantees, in order:
 
-1. a timestamped backup (`settings.yaml.bak-reasoning-efforts-<stamp>`) is written first;
+1. one backup file (`settings.yaml.bak-reasoning-efforts`, overwritten on every run) is written first;
 2. the edited text is **re-parsed** — a document that does not parse is not written;
 3. the parsed result is compared against the original **path by path**, and the
    write is refused if anything outside `llm-pi-ai.providers.*` changed;
@@ -404,7 +405,7 @@ Windows notes that cost time to learn:
 
 ## Rollback
 
-`--restore latest` restores the newest `settings.yaml.bak*`, keeping the current
-state as `settings.yaml.bak-before-restore-<stamp>`. To undo one model, remove its
-`reasoningEfforts` (or set `false`) — the levels disappear and the previous
-behaviour returns without disturbing the rest of the route.
+`--restore latest` restores `settings.yaml.bak-reasoning-efforts` and moves the state it
+replaced back into that same file, so restoring twice toggles between the two states. To
+undo one model, remove its `reasoningEfforts` (or set `false`) — the levels disappear and
+the previous behaviour returns without disturbing the rest of the route.

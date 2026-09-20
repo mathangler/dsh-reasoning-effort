@@ -252,7 +252,8 @@ node scripts/apply-reasoning-efforts.mjs --decide 'my-gateway/my-model=skip'    
 | `--probe` | 允许每个模型发**一次**最小请求来记录"网关接受"（**会产生费用**） |
 | `--strict` | 只写证据为实发探测的模型 |
 | `--fix-routes` | 迁移"目录协议与所在路线不一致"的模型 —— **必须显式给 `--route`**，因为网关不总按目录分流，这个操作有可能弄坏一条当前可用的路线 |
-| `--restore latest\|<文件>` | 把 settings 文档回滚到某个备份 |
+| `--restore latest\|<文件>` | 把 settings 文档回滚到备份 |
+| `--timestamped-backup` | 改为生成带时间戳的多份备份，而不是覆盖那一个 |
 | `--report <路径>` / `--json` | 落盘 markdown 报告 / 输出机器可读结果 |
 | `--settings <路径>` / `--dsh-root <路径>` | 指向别的文档 / 安装 |
 
@@ -283,9 +284,11 @@ node scripts/apply-reasoning-efforts.mjs --settings scripts/fixture-builtin-sett
 
 ## 回滚
 
-`--restore latest` 还原最新的 `settings.yaml.bak*`，并把当前状态另存为
-`settings.yaml.bak-before-restore-<时间戳>`。只想撤销单个模型，删掉它的 `reasoningEfforts`
+只保留**一个**备份文件：`settings.yaml.bak-reasoning-efforts`，每次写入都覆盖它，内容始终是**上一次操作前**的状态。
+它是"一步撤销"，不是归档。`--restore latest` 会还原它，并把被替换掉的状态写回**同一个文件**——
+所以连续 restore 两次就是在这两个状态之间来回切换。只想撤销单个模型，删掉它的 `reasoningEfforts`
 （或设成 `false`）即可——档位消失、行为还原，不影响该路由上的其他模型。
+想要带时间戳的多份备份，加 `--timestamped-backup`。
 
 ## 已知的坑
 

@@ -275,6 +275,7 @@ node scripts/apply-reasoning-efforts.mjs --decide 'my-gateway/my-model=skip'    
 | `--strict` | write only models whose evidence is a live probe |
 | `--fix-routes` | migrate a model whose catalog protocol differs from its route's — requires an explicit `--route`, because a gateway does not always follow its catalog and this can break a working route |
 | `--restore latest\|<file>` | roll the settings document back to a backup |
+| `--timestamped-backup` | name each backup with a timestamp instead of overwriting the single one |
 | `--report <path>` / `--json` | persist the markdown report / emit machine-readable output |
 | `--settings <path>` / `--dsh-root <path>` | point at another document / install |
 
@@ -309,10 +310,13 @@ node scripts/apply-reasoning-efforts.mjs --settings scripts/fixture-builtin-sett
 
 ## Rollback
 
-`--restore latest` restores the newest `settings.yaml.bak*`, keeping the current state as
-`settings.yaml.bak-before-restore-<stamp>`. To undo a single model, delete its
-`reasoningEfforts` (or set `false`) — the levels disappear and the previous behaviour
-returns without disturbing the rest of the route.
+Exactly one backup file is kept: `settings.yaml.bak-reasoning-efforts`, overwritten on
+every write and always holding the state from *before* the last operation. It is a one-step
+undo, not an archive. `--restore latest` restores it and moves the state it replaced back
+into the same file, so restoring twice toggles between the two states. To undo a single
+model, delete its `reasoningEfforts` (or set `false`) — the levels disappear and the
+previous behaviour returns without disturbing the rest of the route. Pass
+`--timestamped-backup` if you would rather have timestamped copies.
 
 ## Known traps
 
