@@ -1,0 +1,31 @@
+# Fixture: proves built-in providers are never written.
+#
+#  deepseek     - a route named after a catalog provider, serving catalog models
+#  opencode-go  - a catalog route that ALSO carries a model the catalog does not know
+#  my-gateway   - a genuinely custom route
+#  llm-deepseek - the native built-in adapter section
+llm-pi-ai:
+  providers:
+    deepseek:
+      apiKeyEnv: DS_KEY
+      models:
+        - id: deepseek-v4-flash
+        - id: deepseek-v4-pro
+    opencode-go:
+      apiKeyEnv: OG_KEY
+      models:
+        - id: glm-5.3
+        - id: totally-unknown-model
+    my-gateway:
+      apiKeyEnv: MG_KEY
+      baseURL: https://opencode.ai/zen/go/v1
+      api: openai-completions
+      models:
+        - id: glm-5.3
+        - id: minimax-m2.5
+llm-deepseek: {}
+locale:
+  preference: zh
+agent-default-model:
+  provider: my-gateway
+  model: glm-5.3

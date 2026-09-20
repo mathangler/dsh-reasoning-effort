@@ -278,14 +278,26 @@ for (const route of routes) {
   const profile = { baseURL: route.baseURL, api: route.api, apiKeyEnv: route.apiKeyEnv, displayName: route.displayName }
 
   if (!isCustom) {
-    // A catalog route: report what it inherits, write nothing. This is the
-    // "built-in providers are not touched" half of the contract.
+    // A catalog route is a *built-in* provider, even when the settings file
+    // overrides it. Report what it inherits and write nothing. The one case worth
+    // flagging is a model added by hand to a catalog route that the catalog does not
+    // know: it has no reasoning metadata at all, and this skill will still not write
+    // for it, because "do not touch built-in providers" outranks "cover every model".
     const models = route.modelIds.map((id) => {
       const entry = catalog.providers.get(route.id)?.models.get(id)
       const derived = deriveFromCatalog(entry)
-      return { id, api: entry?.api ?? route.api, levels: derived.levels.map((l) => l.level), reasoning: derived.reasoning }
+      return { id, api: entry?.api ?? route.api, levels: derived.levels.map((l) => l.level), reasoning: derived.reasoning, inCatalog: entry !== undefined }
     })
     readOnly.push({ route: route.id, api: route.api, baseURL: route.baseURL, models })
+    for (const model of models) {
+      if (!model.inCatalog) {
+        warnings.push(
+          `\`${route.id}\` 是目录内置路由（只读），但其中的模型 \`${model.id}\` 不在目录里、因而没有任何思考档位；按"不动内置提供方"的规则本技能不写它。要给它档位，需要把它放到一条自定义路由上。`,
+        )
+      } else if (model.reasoning !== true) {
+        warnings.push(`\`${route.id}\`（内置）中的 \`${model.id}\` 目录标记为不支持思考，属正常状态，只读呈现。`)
+      }
+    }
     continue
   }
 

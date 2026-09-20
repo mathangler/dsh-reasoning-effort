@@ -92,6 +92,11 @@ node scripts/apply-reasoning-efforts.mjs --default-effort skip --apply
 node scripts/apply-reasoning-efforts.mjs --settings scripts/fixture-settings.yaml
 ```
 
+One `--apply` pass is the whole job for every custom route — new provider, new model,
+changed model, deleted model — and it is idempotent, so running it again is a no-op. It
+fills gaps only: an existing declaration is never rewritten without `--fix`. A clean
+exit therefore means every model on every non-built-in route is covered.
+
 A dry run against a typical gateway route looks like this:
 
 | route | model | current | target | evidence | action |

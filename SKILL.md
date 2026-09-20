@@ -42,6 +42,29 @@ than over a list of provider names: add a provider or a model, run the skill
 again, and the new models are covered in the same pass. It is idempotent, so
 models that are already correct are left byte-for-byte alone.
 
+## Running it: one pass
+
+```sh
+node scripts/apply-reasoning-efforts.mjs --apply
+```
+
+That single command is the whole job for every hand-declared route: it inserts what is
+missing, writes the route default, backs the file up first, validates the result path by
+path, and is idempotent — a second run reports `无需改动` for everything. It never
+rewrites a declaration that is already present (that needs `--fix`) and never touches a
+built-in provider.
+
+Two things can remain afterwards, and neither is a silent failure:
+
+| Left over | Why | What the run does |
+| --- | --- | --- |
+| a model reported as `needs-decision` | nothing sources it | lists it with recommended level sets and exits `1`; search first, then ask the user |
+| a declaration that contradicts the evidence | you configured it by hand | reports a conflict and exits `1`; `--fix` reconciles it |
+
+So a **clean exit means every model on every custom route is covered** — new provider,
+new model, changed model, deleted model all included, because the scan is over the
+routes themselves rather than over a list of names.
+
 ### No provider default: pin the level
 
 A reasoning model whose route declares no `reasoning:` is offered a **Default** row,
@@ -306,13 +329,26 @@ confident wrong answer.
 
 ## Built-in providers: read-only, by contract
 
-- `llm-deepseek` (provider id `deepseek-official`) advertises exactly
-  `off, low, high, max` — four levels, adapter-wide, not per model. Its
-  `reasoningEffort` is a free string validated at dispatch.
-- A route whose key is one of pi-ai's catalog provider ids is an *override* of
-  that provider, not a new provider (`declared: false`). It already inherits
-  reasoning metadata, so there is nothing to declare and this skill writes
-  nothing. Both are reported read-only so the user can compare.
+"Built-in" means **anything DSH itself provides**, not merely the DeepSeek adapter:
+
+| Built-in | How it is recognised | What this skill does |
+| --- | --- | --- |
+| the native DeepSeek adapter, `llm-deepseek` (provider id `deepseek-official`) | a top-level namespace in settings.yaml | read-only; it advertises `off, low, high, max` adapter-wide, not per model |
+| every pi-ai catalog provider — all 40 ids the install ships, e.g. `openai`, `anthropic`, `google`, `deepseek`, `opencode-go`, `zai`, `moonshotai`, `xai`, … | the route key **is** a catalog provider id, i.e. `declared: false` | read-only; such a route *is* that built-in provider with field-level overrides, and it already inherits per-model `reasoning`/`thinkingLevelMap`/`compat` |
+| any other `llm-*` namespace registered by another adapter | a top-level namespace this skill does not recognise | read-only — the tool only ever writes `llm-pi-ai.providers` and `agent-default-model` |
+
+A route is written only when its key is **not** one of those catalog ids. So it is the
+*route name*, not the vendor, that decides: a route called `my-gemini` pointing at
+Google is custom and gets declarations; a route called `google` is the built-in and is
+left alone.
+
+One case is worth knowing because it looks like an omission: **a hand-added model on a
+catalog route**. Such a model has no catalog entry, so it inherits no capability and
+exposes no effort levels — and this skill still will not write for it, because "do not
+touch built-in providers" outranks "cover every model". The report says so explicitly
+and suggests moving the model onto a custom route. `scripts/fixture-builtin-settings.yaml`
+exists to demonstrate all of this: running the writer against it changes exactly two
+places, on the custom route and on `agent-default-model`.
 
 ## Two write-path facts
 

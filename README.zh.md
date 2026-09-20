@@ -85,6 +85,8 @@ node scripts/apply-reasoning-efforts.mjs --default-effort skip --apply
 node scripts/apply-reasoning-efforts.mjs --settings scripts/fixture-settings.yaml
 ```
 
+一次 `--apply` 就是全部工作——新提供方、新模型、改模型、删模型都覆盖——而且**幂等**，再跑一次等于什么都没做。它只补空缺：**已有的声明在没有 `--fix` 时绝不改写**。因此"干净退出"就意味着所有非内置提供方的模型都已覆盖。
+
 典型网关路线的干跑输出：
 
 | 路线 | 模型 | 现状 | 目标 | 依据 | 动作 |
