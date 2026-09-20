@@ -43,22 +43,43 @@ A clean exit (`0`) therefore means *every model on every custom route is covered
 
 ## Install
 
-**This skill belongs in DSH's own skills root** — `$DSH_HOME/skills`, i.e.
-`~/.dsh/skills/dsh-reasoning-effort`, or `<project>/.dsh/skills/dsh-reasoning-effort` for
-project scope. It is DSH-specific: it knows DSH's `settings.yaml` schema, DSH's pi-ai
-catalog and DSH's adapters, and it has nothing to offer another agent. The shared
-`.agents/skills` root is for skills several agents use, so do not put this one there.
+This skill is DSH-specific: it understands DSH's `settings.yaml` schema, DSH's pi-ai catalog
+and DSH's adapters, and it has nothing to offer any other agent. So it belongs in **DSH's
+own skills root** — the `.dsh` one, never the shared `.agents/skills` root:
 
-### A — copy it into `~/.dsh/skills` (recommended)
+| Scope | Directory |
+| --- | --- |
+| user (recommended) | `$DSH_HOME/skills/dsh-reasoning-effort` — by default `~/.dsh/skills/dsh-reasoning-effort` |
+| project | `<project>/.dsh/skills/dsh-reasoning-effort` |
+
+### With git — recommended, because it also gives you updates
+
+Clone straight into place, so the skill directory *is* the checkout:
+
+**macOS / Linux**
+
+```sh
+git clone https://github.com/mathangler/dsh-reasoning-effort.git \
+  "${DSH_HOME:-$HOME/.dsh}/skills/dsh-reasoning-effort"
+```
 
 **Windows (PowerShell)**
 
 ```powershell
-$src  = 'C:\path\to\dsh-reasoning-effort'
-$dest = "$env:USERPROFILE\.dsh\skills\dsh-reasoning-effort"
-New-Item -ItemType Directory -Force -Path $dest | Out-Null
-Copy-Item "$src\SKILL.md","$src\README.md","$src\README.zh.md","$src\FORK-NOTES.md","$src\LICENSE","$src\data","$src\scripts" $dest -Recurse -Force
+git clone https://github.com/mathangler/dsh-reasoning-effort.git `
+  "$env:USERPROFILE\.dsh\skills\dsh-reasoning-effort"
 ```
+
+There is nothing to build and nothing to install: both scripts are plain Node ESM and
+resolve `js-yaml` out of your DSH installation. A `.git` directory inside the skills root is
+harmless — DSH looks for `SKILL.md` and reads the rest as resources.
+
+For project scope, run the same command from the project root with
+`.dsh/skills/dsh-reasoning-effort` as the destination.
+
+### From a local copy
+
+Use this if you would rather not keep a checkout inside the skills root.
 
 **macOS / Linux**
 
@@ -70,92 +91,108 @@ cp -R "$src"/SKILL.md "$src"/README.md "$src"/README.zh.md "$src"/FORK-NOTES.md 
       "$src"/LICENSE "$src"/data "$src"/scripts "$dest"/
 ```
 
-### B — clone, then copy
-
-```sh
-git clone https://github.com/mathangler/dsh-reasoning-effort /tmp/dsh-reasoning-effort
-mkdir -p "${DSH_HOME:-$HOME/.dsh}/skills/dsh-reasoning-effort"
-cp -R /tmp/dsh-reasoning-effort/SKILL.md /tmp/dsh-reasoning-effort/data \
-      /tmp/dsh-reasoning-effort/scripts \
-      "${DSH_HOME:-$HOME/.dsh}/skills/dsh-reasoning-effort/"
-```
-
-### C — when `git` cannot reach GitHub
-
-Some sandboxes block git's transport (TCP to github.com times out, Windows schannel has no
-credential handle, ssh is refused). The content can still be installed through the GitHub
-API, with every file verified by recomputing git's blob id:
-
-```sh
-GH_TOKEN=$(gh auth token) node scripts/install-from-github.mjs "$HOME/.dsh/skills/dsh-reasoning-effort"
-```
-
-PowerShell equivalent:
+**Windows (PowerShell)**
 
 ```powershell
+$src  = 'C:\path\to\dsh-reasoning-effort'
+$dest = "$env:USERPROFILE\.dsh\skills\dsh-reasoning-effort"
+New-Item -ItemType Directory -Force -Path $dest | Out-Null
+Copy-Item "$src\SKILL.md","$src\README.md","$src\README.zh.md","$src\FORK-NOTES.md","$src\LICENSE","$src\data","$src\scripts" $dest -Recurse -Force
+```
+
+### When `git` cannot reach GitHub
+
+Some sandboxes block git's transport — TCP to github.com times out, Windows schannel has no
+credential handle, ssh is refused. Fetch the installer through a channel that does work
+(here, the GitHub API via `gh`) and let it verify every file against the published blob ids:
+
+**macOS / Linux**
+
+```sh
+gh api -H 'Accept: application/vnd.github.raw' \
+  repos/mathangler/dsh-reasoning-effort/contents/scripts/install-from-github.mjs \
+  > /tmp/install-from-github.mjs
+GH_TOKEN=$(gh auth token) node /tmp/install-from-github.mjs \
+  "$HOME/.dsh/skills/dsh-reasoning-effort"
+```
+
+**Windows (PowerShell)**
+
+```powershell
+gh api -H 'Accept: application/vnd.github.raw' `
+  repos/mathangler/dsh-reasoning-effort/contents/scripts/install-from-github.mjs |
+  Set-Content -Path "$env:TEMP\install-from-github.mjs" -Encoding utf8
 $env:GH_TOKEN = (gh auth token)
-node scripts\install-from-github.mjs "$env:USERPROFILE\.dsh\skills\dsh-reasoning-effort"
+node "$env:TEMP\install-from-github.mjs" "$env:USERPROFILE\.dsh\skills\dsh-reasoning-effort"
 ```
 
-The tarball is fetched from the published commit, so the installed tree is provably the
-published tree rather than a copy of a local working directory.
-`scripts/publish-via-api.mjs` is its counterpart — it pushes a local commit through the
-same API, verifying the created tree against the local one before moving the branch.
+It resolves the published commit's tree, downloads the blobs, recomputes each git blob id,
+and refuses to write anything that does not match — so what lands is provably the published
+tree, not a copy of someone's working directory. `scripts/publish-via-api.mjs` is its
+counterpart for pushing.
 
-### D — `npx skills`, used only to fetch
+### Update
 
-[`skills`](https://github.com/vercel-labs/skills) is the ecosystem CLI, and it is the
-easiest way to pull this skill's files onto a machine. **It cannot install into `.dsh`**:
-it knows 75+ agents but has no `dsh` target, so it writes to an agent directory instead —
-and for the group whose path is `.agents/skills/` that means the *shared* root, which is
-the wrong home for a DSH-specific skill. Use it as a fetch step, then move the directory
-where it belongs:
+| Installed with | Update with |
+| --- | --- |
+| git clone | `git -C "${DSH_HOME:-$HOME/.dsh}/skills/dsh-reasoning-effort" pull --ff-only` |
+| local copy | re-run the copy, or the API installer (it replaces the directory wholesale) |
 
-```bash
-npx skills add mathangler/dsh-reasoning-effort --list      # discover without installing
-npx skills add mathangler/dsh-reasoning-effort -g -a cline -y --copy
-```
+Windows:
 
 ```powershell
-# then relocate it into DSH's own root, and do not keep both copies
-Move-Item "$env:USERPROFILE\.agents\skills\dsh-reasoning-effort" `
-          "$env:USERPROFILE\.dsh\skills\dsh-reasoning-effort"
+git -C "$env:USERPROFILE\.dsh\skills\dsh-reasoning-effort" pull --ff-only
 ```
 
-- `-a cline` is any agent whose path is `.agents/skills/` (`cline`, `dexto`,
-  `kimi-code-cli`, `loaf`, `sarvam-code`, `warp`, `zed`); they are interchangeable here.
-- `-g` installs to `~/.agents/skills/`, without it to `./.agents/skills/`.
-- `--copy` makes it a real directory instead of a symlink.
-- Keeping both copies is harmless but confusing: the `.dsh` copy wins the ranking below,
-  so the `.agents` one silently does nothing.
+**Read this before your first pull.** `data/reasoning-overrides.yaml` and
+`data/user-decisions.yaml` are *your* inputs — the vendor facts you cited and the answers
+you gave with `--decide`. If you edited them in place, a pull can conflict. Either keep
+those edits on a branch of your own, or keep your entries in a file outside the checkout.
+The scripts never write to them on their own.
 
-Managing that fetch-install, and skills in general:
+After updating, re-check and re-apply:
 
-```bash
-npx skills ls -g                                  # what is installed
-npx skills update -g                              # pull the latest revision
-npx skills remove -g -a cline dsh-reasoning-effort -y
-npx skills find reasoning                         # search the ecosystem
-npx skills init my-skill                          # scaffold a new skill
-npx skills use mathangler/dsh-reasoning-effort --skill dsh-reasoning-effort --agent claude-code
+```sh
+node scripts/check-reasoning-route.mjs
+node scripts/apply-reasoning-efforts.mjs --apply
 ```
 
-Environment: `DISABLE_TELEMETRY=1` / `DO_NOT_TRACK=1` turn off the CLI's telemetry;
-`GITHUB_TOKEN` / `GH_TOKEN` are only needed for private sources or API rate limits.
+### Uninstall
+
+**macOS / Linux**
+
+```sh
+rm -rf "${DSH_HOME:-$HOME/.dsh}/skills/dsh-reasoning-effort"
+```
+
+**Windows (PowerShell)**
+
+```powershell
+Remove-Item -Recurse -Force "$env:USERPROFILE\.dsh\skills\dsh-reasoning-effort"
+```
+
+For a project-scoped install, delete `<project>/.dsh/skills/dsh-reasoning-effort` the same
+way.
+
+**Uninstalling the skill does not undo its edits.** The `reasoningEfforts` declarations and
+the route-level `reasoning:` values stay in `settings.yaml` — they are ordinary
+configuration, not something the skill injects at runtime. Run `--restore latest` *before*
+removing the directory (see [Rollback](#rollback)), or delete the declarations by hand.
 
 ### Where DSH looks for skills
 
+Reference, so the precedence is not a surprise. Lower rank wins, and a skill is identified
+by its `name` — two copies with the same name resolve to the lower-ranked one.
+
 | Root | Rank | Notes |
 | --- | --- | --- |
-| `<project>/.dsh/skills` | 100 | project scope, DSH-specific — **use this for project scope** |
+| `<project>/.dsh/skills` | 100 | project scope, DSH-specific — the project home for this skill |
 | `<project>/.agents/skills` | 200 | project scope, shared between agents |
 | custom directories | 300 | configured by the host |
-| `$DSH_HOME/skills` | 400 | user scope, DSH-specific (default `~/.dsh/skills`) — **the recommended home** |
-| `$DSH_AGENTS_HOME/skills` | 500 | user scope, shared between agents (default `~/.agents/skills`) |
+| `$DSH_HOME/skills` | 400 | user scope, DSH-specific — the recommended home for this skill |
+| `$DSH_AGENTS_HOME/skills` | 500 | user scope, shared between agents |
 | bundled with DSH | 600 | ships with the harness |
 
-Lower rank wins, and a skill is identified by its `name`: two copies with the same name
-resolve to the lower-ranked one, which is why a `.dsh` copy shadows a `.agents` copy.
 `DSH_HOME` and `DSH_AGENTS_HOME` move the two user roots.
 
 ## Use it

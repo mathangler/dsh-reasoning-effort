@@ -33,21 +33,41 @@
 
 ## 安装
 
-**这个技能属于 DSH 自己的技能根**：`$DSH_HOME/skills`，也就是
-`~/.dsh/skills/dsh-reasoning-effort`；要项目级作用域就放 `<项目>/.dsh/skills/dsh-reasoning-effort`。
-它是 **DSH 专用**的：它懂的是 DSH 的 `settings.yaml` schema、DSH 的 pi-ai 目录、DSH 的适配器，
-对别的 agent 没有任何用处。`.agents/skills` 是多个 agent **共用**的位置，不要把它放那里。
+本技能是 **DSH 专用**的：它懂的是 DSH 的 `settings.yaml` schema、DSH 的 pi-ai 目录、DSH 的适配器，
+对别的 agent 没有任何用处。所以它属于 **DSH 自己的技能根**——`.dsh` 这一个，
+**不要**放到多 agent 共用的 `.agents/skills`：
 
-### 方式 A —— 直接拷进 `~/.dsh/skills`（推荐）
+| 作用域 | 目录 |
+| --- | --- |
+| 用户级（推荐） | `$DSH_HOME/skills/dsh-reasoning-effort`，默认即 `~/.dsh/skills/dsh-reasoning-effort` |
+| 项目级 | `<项目>/.dsh/skills/dsh-reasoning-effort` |
+
+### 用 git 安装 —— 推荐，因为更新也随之解决
+
+直接克隆到技能位置，让技能目录**本身就是那个 checkout**：
+
+**macOS / Linux**
+
+```sh
+git clone https://github.com/mathangler/dsh-reasoning-effort.git \
+  "${DSH_HOME:-$HOME/.dsh}/skills/dsh-reasoning-effort"
+```
 
 **Windows (PowerShell)**
 
 ```powershell
-$src  = 'C:\path\to\dsh-reasoning-effort'
-$dest = "$env:USERPROFILE\.dsh\skills\dsh-reasoning-effort"
-New-Item -ItemType Directory -Force -Path $dest | Out-Null
-Copy-Item "$src\SKILL.md","$src\README.md","$src\README.zh.md","$src\FORK-NOTES.md","$src\LICENSE","$src\data","$src\scripts" $dest -Recurse -Force
+git clone https://github.com/mathangler/dsh-reasoning-effort.git `
+  "$env:USERPROFILE\.dsh\skills\dsh-reasoning-effort"
 ```
+
+无需构建、无需安装依赖：两个脚本都是纯 Node ESM，`js-yaml` 从你的 DSH 安装里解析。
+技能根里多一个 `.git` 目录无害——DSH 找的是 `SKILL.md`，其余当作资源文件读取。
+
+项目级作用域：在项目根目录执行同样的命令，目标写 `.dsh/skills/dsh-reasoning-effort`。
+
+### 从本地副本安装
+
+不想在技能根里留一个 checkout 就用这种方式。
 
 **macOS / Linux**
 
@@ -59,86 +79,101 @@ cp -R "$src"/SKILL.md "$src"/README.md "$src"/README.zh.md "$src"/FORK-NOTES.md 
       "$src"/LICENSE "$src"/data "$src"/scripts "$dest"/
 ```
 
-### 方式 B —— clone 后再拷
-
-```sh
-git clone https://github.com/mathangler/dsh-reasoning-effort /tmp/dsh-reasoning-effort
-mkdir -p "${DSH_HOME:-$HOME/.dsh}/skills/dsh-reasoning-effort"
-cp -R /tmp/dsh-reasoning-effort/SKILL.md /tmp/dsh-reasoning-effort/data \
-      /tmp/dsh-reasoning-effort/scripts \
-      "${DSH_HOME:-$HOME/.dsh}/skills/dsh-reasoning-effort/"
-```
-
-### 方式 C —— `git` 到不了 GitHub 时
-
-有些沙箱会掐掉 git 的传输（到 github.com 的 TCP 超时、Windows schannel 没有凭据句柄、ssh 被拒）。
-内容仍可通过 GitHub API 安装，并且**逐文件重算 git blob id 校验**：
-
-```sh
-GH_TOKEN=$(gh auth token) node scripts/install-from-github.mjs "$HOME/.dsh/skills/dsh-reasoning-effort"
-```
-
-PowerShell 等价写法：
+**Windows (PowerShell)**
 
 ```powershell
+$src  = 'C:\path\to\dsh-reasoning-effort'
+$dest = "$env:USERPROFILE\.dsh\skills\dsh-reasoning-effort"
+New-Item -ItemType Directory -Force -Path $dest | Out-Null
+Copy-Item "$src\SKILL.md","$src\README.md","$src\README.zh.md","$src\FORK-NOTES.md","$src\LICENSE","$src\data","$src\scripts" $dest -Recurse -Force
+```
+
+### `git` 到不了 GitHub 时
+
+有些沙箱会掐掉 git 的传输——到 github.com 的 TCP 超时、Windows schannel 没有凭据句柄、ssh 被拒。
+这时用**能走通的通道**取安装器（这里是经 `gh` 走 GitHub API），由它**逐文件重算 git blob id** 后写入：
+
+**macOS / Linux**
+
+```sh
+gh api -H 'Accept: application/vnd.github.raw' \
+  repos/mathangler/dsh-reasoning-effort/contents/scripts/install-from-github.mjs \
+  > /tmp/install-from-github.mjs
+GH_TOKEN=$(gh auth token) node /tmp/install-from-github.mjs \
+  "$HOME/.dsh/skills/dsh-reasoning-effort"
+```
+
+**Windows (PowerShell)**
+
+```powershell
+gh api -H 'Accept: application/vnd.github.raw' `
+  repos/mathangler/dsh-reasoning-effort/contents/scripts/install-from-github.mjs |
+  Set-Content -Path "$env:TEMP\install-from-github.mjs" -Encoding utf8
 $env:GH_TOKEN = (gh auth token)
-node scripts\install-from-github.mjs "$env:USERPROFILE\.dsh\skills\dsh-reasoning-effort"
+node "$env:TEMP\install-from-github.mjs" "$env:USERPROFILE\.dsh\skills\dsh-reasoning-effort"
 ```
 
-它从**已发布的 commit** 取 tarball，所以装出来的树可证明就是发布的那棵树，而不是本地工作目录的拷贝。
-`scripts/publish-via-api.mjs` 是它的对偶：经同一个 API 推送本地 commit，并在移动分支前把远端树与本地树比对。
+它会解析**已发布 commit** 的 tree、下载 blob、逐个重算 blob id，任何对不上就拒绝写入——
+所以装出来的一定是发布的那棵树，而不是某台机器的工作目录。`scripts/publish-via-api.mjs` 是它的对偶（用于推送）。
 
-### 方式 D —— 用 `npx skills` 取件，但不要装在那里
+### 更新
 
-[`skills`](https://github.com/vercel-labs/skills) 是生态里的技能 CLI，把本技能的**文件**取到机器上最省事。
-但它**装不进 `.dsh`**：它认识 75+ 个 agent，却**没有 `dsh` 这个目标**，只会往某个 agent 目录里写；
-对落点为 `.agents/skills/` 的那一组来说，那是**共用根**——不是 DSH 专用技能该待的地方。
-所以把它当"取件"步骤，取完再挪到正确位置：
+| 当初的安装方式 | 更新方式 |
+| --- | --- |
+| git clone | `git -C "${DSH_HOME:-$HOME/.dsh}/skills/dsh-reasoning-effort" pull --ff-only` |
+| 本地副本 | 重新执行拷贝，或用 API 安装器（它会整体替换该目录） |
 
-```bash
-npx skills add mathangler/dsh-reasoning-effort --list      # 只发现、不安装
-npx skills add mathangler/dsh-reasoning-effort -g -a cline -y --copy
-```
+Windows：
 
 ```powershell
-# 然后挪进 DSH 自己的根，并且不要两处都留
-Move-Item "$env:USERPROFILE\.agents\skills\dsh-reasoning-effort" `
-          "$env:USERPROFILE\.dsh\skills\dsh-reasoning-effort"
+git -C "$env:USERPROFILE\.dsh\skills\dsh-reasoning-effort" pull --ff-only
 ```
 
-- `-a cline` 指同组任意一个落点为 `.agents/skills/` 的 agent（`cline`、`dexto`、
-  `kimi-code-cli`、`loaf`、`sarvam-code`、`warp`、`zed`），彼此等价。
-- `-g` 装到 `~/.agents/skills/`，不加则装到当前项目的 `./.agents/skills/`。
-- `--copy` 让它成为真实目录而不是符号链接。
-- 两份都留不会报错，但会误导：按下面的优先级，`.dsh` 那份胜出，`.agents` 那份**静默失效**。
+**第一次 pull 之前请读这条。** `data/reasoning-overrides.yaml` 与 `data/user-decisions.yaml`
+是**你自己的输入层**——你引用的厂商事实、你用 `--decide` 给出的答案。若你改过它们，pull 可能冲突。
+要么把这些改动放在你自己的分支上，要么把条目放在 checkout 之外的文件里。脚本自身从不写这两个文件。
 
-技能相关的其他操作：
+更新后重新核对并重新应用：
 
-```bash
-npx skills ls -g                                  # 已安装了什么
-npx skills update -g                              # 拉到最新版
-npx skills remove -g -a cline dsh-reasoning-effort -y
-npx skills find reasoning                         # 搜索生态里的技能
-npx skills init my-skill                          # 生成一个新技能骨架
-npx skills use mathangler/dsh-reasoning-effort --skill dsh-reasoning-effort --agent claude-code
+```sh
+node scripts/check-reasoning-route.mjs
+node scripts/apply-reasoning-efforts.mjs --apply
 ```
 
-环境变量：`DISABLE_TELEMETRY=1` / `DO_NOT_TRACK=1` 关闭该 CLI 的遥测；`GITHUB_TOKEN` / `GH_TOKEN`
-只在私有源或触发 API 限流时才需要。
+### 卸载
+
+**macOS / Linux**
+
+```sh
+rm -rf "${DSH_HOME:-$HOME/.dsh}/skills/dsh-reasoning-effort"
+```
+
+**Windows (PowerShell)**
+
+```powershell
+Remove-Item -Recurse -Force "$env:USERPROFILE\.dsh\skills\dsh-reasoning-effort"
+```
+
+项目级安装同理，删除 `<项目>/.dsh/skills/dsh-reasoning-effort` 即可。
+
+**卸载技能不会撤销它做过的改动。** `reasoningEfforts` 声明与路由级 `reasoning:` 值会留在
+`settings.yaml` 里——它们是普通的配置，不是技能在运行时注入的东西。请在删除目录**之前**先跑
+`--restore latest`（见下方「回滚」），或者手工删掉那些声明。
 
 ### DSH 从哪里读技能
 
+供参照，免得被优先级意外到。**rank 越小越优先**；技能按 `name` 识别，同名副本只有 rank 更低的那份生效。
+
 | 根目录 | rank | 说明 |
 | --- | --- | --- |
-| `<项目>/.dsh/skills` | 100 | 项目级，DSH 专用 —— **项目级作用域就用这个** |
-| `<项目>/.agents/skills` | 200 | 项目级，多个 agent 共用 |
+| `<项目>/.dsh/skills` | 100 | 项目级，DSH 专用 —— 本技能的项目级位置 |
+| `<项目>/.agents/skills` | 200 | 项目级，多 agent 共用 |
 | 自定义目录 | 300 | 由宿主配置 |
-| `$DSH_HOME/skills` | 400 | 用户级，DSH 专用（默认 `~/.dsh/skills`）—— **推荐的家** |
-| `$DSH_AGENTS_HOME/skills` | 500 | 用户级，多个 agent 共用（默认 `~/.agents/skills`） |
+| `$DSH_HOME/skills` | 400 | 用户级，DSH 专用 —— 本技能推荐的安装位置 |
+| `$DSH_AGENTS_HOME/skills` | 500 | 用户级，多 agent 共用 |
 | DSH 随附 | 600 | 与 harness 一同发布 |
 
-**rank 越小越优先**；技能按 `name` 识别，同名副本只有 rank 更低的那份生效——这就是为什么 `.dsh` 那份会
-遮蔽 `.agents` 那份。`DSH_HOME` 与 `DSH_AGENTS_HOME` 可整体移动这两个用户根。
+`DSH_HOME` 与 `DSH_AGENTS_HOME` 可整体移动这两个用户根。
 
 ## 使用
 
