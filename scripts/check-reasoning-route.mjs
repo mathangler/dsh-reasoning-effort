@@ -34,7 +34,37 @@ import { defaultSettingsPath, dshVersion, findInstall, loadCatalog, loadCompatGa
 import { listRoutes, splitText } from './lib/yaml-edit.mjs'
 
 const SKILL_DIR = fileURLToPath(new URL('..', import.meta.url))
-const argv = process.argv.slice(2)
+const CONTRACT = 1
+const VALUE_FLAGS = new Set(['--settings', '--dsh-root', '--route'])
+const BOOLEAN_FLAGS = new Set(['--json', '--help', '-h'])
+
+// Strict, like the writer: a misspelled flag must not turn into a silent success.
+const argv = []
+for (const token of process.argv.slice(2)) {
+  const inline = /^(--[a-z-]+)=(.*)$/.exec(token)
+  if (inline === null) argv.push(token)
+  else argv.push(inline[1], inline[2])
+}
+const unknown = []
+for (let i = 0; i < argv.length; i++) {
+  const token = argv[i]
+  if (!token.startsWith('-')) {
+    if (i === 0 || !VALUE_FLAGS.has(argv[i - 1])) unknown.push(token)
+    continue
+  }
+  if (BOOLEAN_FLAGS.has(token)) continue
+  if (VALUE_FLAGS.has(token)) {
+    if (argv[i + 1] === undefined) unknown.push(`${token} (missing value)`)
+    continue
+  }
+  unknown.push(token)
+}
+if (unknown.length > 0) {
+  console.error(`unknown or malformed argument(s): ${unknown.join(', ')}`)
+  console.error(`allowed: ${[...BOOLEAN_FLAGS, ...VALUE_FLAGS].join(' ')}`)
+  console.error('nothing was read; this checker never writes')
+  process.exit(2)
+}
 const flagValue = (name, fallback) => {
   const i = argv.indexOf(name)
   return i === -1 ? fallback : argv[i + 1]
@@ -88,6 +118,7 @@ const catalogProviderIds = new Set(catalog.providers.keys())
 const routes = listRoutes(splitText(text).lines).filter((r) => wantRoute === undefined || r.id === wantRoute)
 
 const report = {
+  contract: CONTRACT,
   settings: settingsPath,
   dsh: { root: install.label, version: dshVersion(install), piAiCatalog: catalog.providers.size, compatGates: gates.available },
   routes: [],
@@ -210,6 +241,7 @@ if (has('--json')) {
   console.log(JSON.stringify({ ...report, deepseek: deepseekNote }, null, 2))
 } else {
   console.log(`settings    : ${settingsPath}`)
+  console.log(`contract    : ${CONTRACT} (SKILL.md states the contract it expects)`)
   console.log(`dsh install : ${install.label}${dshVersion(install) === undefined ? '' : ` (dsh ${dshVersion(install)})`}`)
   console.log(`pi-ai       : ${catalog.providers.size} catalog providers`)
   console.log(`compat gates: ${gates.available ? `parsed (${gates.gatesFound} gate literals)` : `UNAVAILABLE — ${gates.reason}`}`)

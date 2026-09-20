@@ -29,7 +29,29 @@
    只补空缺，绝不改写已经存在的声明。
 7. **三平台。** Windows / macOS / Linux；无需安装依赖——`js-yaml` 直接从你的 DSH 安装里取。
 
-因此**干净退出（`0`）就等于"所有自定义路由上的模型都已覆盖"**。
+因此**干净退出（`0`）就等于"范围内的自定义路由全部覆盖"**。
+
+### 为什么它在任何平台、任何模型下表现一致
+
+脚本本身是确定性的，所以方差只可能来自**驱动它时的选择**。因此流程被做成闭环：单一入口，不含任何需要判断的步骤。
+
+| 步骤 | 命令 | 闸门 |
+| --- | --- | --- |
+| 1 | `apply-reasoning-efforts.mjs --self-test` | 退出 `0` = 这份构建在本机与文档描述一致 |
+| 2 | `apply-reasoning-efforts.mjs --apply --json` | 只读 `verdict`、`nextAction`、`commands` |
+| 3 | 按 `nextAction` 执行 `commands` 里的命令 | `search-then-ask` 与 `resolve-conflicts` 必须先拿到你的答复 |
+| 4 | `check-reasoning-route.mjs --json` | `problems` 必须为 `[]` |
+| 5 | 原样回报 `verdict` | `verdict` 不是 `covered` 时不许说"完成" |
+
+支撑这五步的约束：
+
+- **未知参数一律退出 `2`**，不再被忽略。以前把 `--apply` 打错成 `--appply` 会输出一份完整、看起来正常的报告却什么都没改——这是 agent 唯一无法察觉的失败模式。
+- **`--json` 就是契约**：`verdict`、`nextAction`、`commands`、`coverage`、`contract`。
+- **`--route` 会把本次运行标成 `scope: partial`**，局部运行不会被误读成全覆盖。
+- **两个脚本都会打印 `contract 1`**，`SKILL.md` 用它跟自己的副本比对，过期或半更新的安装不会静默分叉。
+- **命令三平台只有一种写法**：正斜杠、值不加引号、不用 shell 重定向、不用 `VAR=$(...)`。
+
+`SKILL.md` 是执行路径（约一页，不含内部机理）；机理放在 `REFERENCE.md`，只在用户问"为什么"时才读。
 
 ## 安装
 
@@ -181,10 +203,11 @@ Remove-Item -Recurse -Force "$env:USERPROFILE\.dsh\skills\dsh-reasoning-effort"
 `disable-model-invocation: true`——模型不会自行触发它（`/` 菜单里会标成 *user only*）——
 对一个会改你配置文件的东西来说，这是正确的默认。你也可以直接点名让 agent 用它。
 
-然后全部工作就是一条命令：
+然后全部工作就是一条命令——但先过闸门：
 
 ```sh
-node scripts/apply-reasoning-efforts.mjs --apply
+node scripts/apply-reasoning-efforts.mjs --self-test   # 退出 0 = 本机与文档一致
+node scripts/apply-reasoning-efforts.mjs --apply       # 全部工作
 ```
 
 它会扫描每条自定义路由、补齐缺失声明、写入路由默认档，**写前备份**、**写后逐路径校验**并报告。
@@ -254,10 +277,12 @@ node scripts/apply-reasoning-efforts.mjs --decide 'my-gateway/my-model=skip'    
 | `--fix-routes` | 迁移"目录协议与所在路线不一致"的模型 —— **必须显式给 `--route`**，因为网关不总按目录分流，这个操作有可能弄坏一条当前可用的路线 |
 | `--restore latest\|<文件>` | 把 settings 文档回滚到备份 |
 | `--timestamped-backup` | 改为生成带时间戳的多份备份，而不是覆盖那一个 |
-| `--report <路径>` / `--json` | 落盘 markdown 报告 / 输出机器可读结果 |
+| `--report <路径>` / `--json` | 落盘 markdown 报告 / 输出机器可读结果（`verdict`、`nextAction`、`commands`、`coverage`、`contract`） |
+| `--self-test` | 用两个夹具驱动写入器并断言契约；应当先跑的闸门 |
+| *（任何未识别参数）* | 在读取任何文件之前就退出 `2`，绝不静默忽略 |
 | `--settings <路径>` / `--dsh-root <路径>` | 指向别的文档 / 安装 |
 
-退出码：`0` 全部覆盖，`1` 有待办或有问题，`2` 环境读不到。
+退出码：`0` **范围内**的每条自定义路由都已覆盖（用 `--route` 时范围就是那条路由，工具会标 `scope: partial`），`1` 有待办或有问题，`2` 环境或调用方式不可用。
 
 ### 环境变量
 

@@ -41,6 +41,34 @@ model's real level set from the catalog DSH ships, writes it as a per-model
 
 A clean exit (`0`) therefore means *every model on every custom route is covered*.
 
+### Why it behaves the same on every platform and under every model
+
+The scripts are deterministic, so the variance would come from the *choices* made while driving
+them. The workflow is therefore a closed loop: one entry point, and no judgement calls.
+
+| Step | Command | Gate |
+| --- | --- | --- |
+| 1 | `apply-reasoning-efforts.mjs --self-test` | exit `0` = this build behaves as documented on this machine |
+| 2 | `apply-reasoning-efforts.mjs --apply --json` | read `verdict`, `nextAction`, `commands` |
+| 3 | the `commands` for that `nextAction` | `search-then-ask` and `resolve-conflicts` need the user's answer first |
+| 4 | `check-reasoning-route.mjs --json` | `problems` must be `[]` |
+| 5 | report the `verdict` verbatim | never claim success while it is not `covered` |
+
+What makes that hold:
+
+- **Unknown flags exit `2`** instead of being ignored. A mistyped `--apply` used to produce a
+  complete, plausible report while changing nothing — the one failure mode an agent cannot notice.
+- **`--json` is the contract**: `verdict`, `nextAction`, `commands`, `coverage`, `contract`.
+- **`--route` marks the run `scope: partial`**, so a narrow run cannot be read as full coverage.
+- **Both scripts print `contract 1`**, which `SKILL.md` checks against its own copy, so a stale
+  or half-updated install cannot silently diverge.
+- **Commands are written one way for all three platforms**: forward slashes, no value quoting, no
+  shell redirection, no `VAR=$(...)`.
+
+`SKILL.md` is the execution path — about one page, with no internals in it. `REFERENCE.md` holds
+the mechanisms behind it (the catalog-by-route-name rule, the protocol table, the "Default" row,
+the evidence tiers) and is read only when the user asks why.
+
 ## Install
 
 This skill is DSH-specific: it understands DSH's `settings.yaml` schema, DSH's pi-ai catalog
@@ -202,10 +230,11 @@ Type `/` in the composer and pick **`dsh-reasoning-effort`**. The skill is delib
 menu marks it *user only* — which is the right default for something that edits your
 configuration. You can also ask the agent to use it by name.
 
-Then the whole job is one command:
+Then the whole job is one command — but run the gate first:
 
 ```sh
-node scripts/apply-reasoning-efforts.mjs --apply
+node scripts/apply-reasoning-efforts.mjs --self-test   # exit 0 = this build behaves as documented
+node scripts/apply-reasoning-efforts.mjs --apply       # the whole job
 ```
 
 It scans every custom route, inserts what is missing, writes the route default, backs the
@@ -276,11 +305,14 @@ node scripts/apply-reasoning-efforts.mjs --decide 'my-gateway/my-model=skip'    
 | `--fix-routes` | migrate a model whose catalog protocol differs from its route's — requires an explicit `--route`, because a gateway does not always follow its catalog and this can break a working route |
 | `--restore latest\|<file>` | roll the settings document back to a backup |
 | `--timestamped-backup` | name each backup with a timestamp instead of overwriting the single one |
-| `--report <path>` / `--json` | persist the markdown report / emit machine-readable output |
+| `--report <path>` / `--json` | persist the markdown report / emit machine-readable output (`verdict`, `nextAction`, `commands`, `coverage`, `contract`) |
+| `--self-test` | drive the writer against both shipped fixtures and assert the contract; the gate to run first |
+| *(anything unrecognised)* | rejected with exit `2` before a single file is read — never silently ignored |
 | `--settings <path>` / `--dsh-root <path>` | point at another document / install |
 
-Exit codes: `0` every model covered, `1` something is pending or broken, `2` the
-environment could not be read.
+Exit codes: `0` every custom route **in scope** is covered (with `--route` the scope is that
+route, and the tool says `scope: partial`), `1` something is pending or broken, `2` the
+environment or the invocation is unusable.
 
 ### Environment
 

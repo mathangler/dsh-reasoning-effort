@@ -16,8 +16,10 @@
  * Exit codes: 0 nothing to do, 1 changes pending or problems found, 2 the
  * environment could not be read (install, js-yaml, or the settings document).
  */
-import { copyFileSync, existsSync, mkdirSync, readFileSync, readdirSync, statSync, writeFileSync } from 'node:fs'
+import { copyFileSync, existsSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, rmSync, statSync, writeFileSync } from 'node:fs'
 import { basename, dirname, join, resolve } from 'node:path'
+import { tmpdir } from 'node:os'
+import { spawnSync } from 'node:child_process'
 import { fileURLToPath } from 'node:url'
 
 import { analyzeLine, children, joinText, listRoutes, locateRoute, moveModelItem, createRoute, splitText, upsertNamespaceScalar, upsertReasoningEfforts, upsertRouteScalar } from './lib/yaml-edit.mjs'
@@ -45,7 +47,40 @@ import {
 const SKILL_DIR = resolve(dirname(fileURLToPath(import.meta.url)), '..')
 
 // ------------------------------------------------------------------ arguments
-const argv = process.argv.slice(2)
+// Strict on purpose. An unknown or misspelled flag used to be ignored, so `--appply`
+// produced a complete, plausible report while changing nothing — the worst failure mode
+// for a tool an agent drives, because the agent has no way to notice. Every valid flag is
+// listed here, and anything else exits 2 before a single file is read.
+const CONTRACT = 1
+const VALUE_FLAGS = new Set(['--settings', '--dsh-root', '--route', '--decide', '--evidence', '--source', '--default-effort', '--report', '--restore'])
+const BOOLEAN_FLAGS = new Set(['--apply', '--fix', '--strict', '--probe', '--fix-routes', '--json', '--timestamped-backup', '--self-test', '--help', '-h'])
+
+const argv = []
+for (const token of process.argv.slice(2)) {
+  const inline = /^(--[a-z-]+)=(.*)$/.exec(token)
+  if (inline === null) argv.push(token)
+  else argv.push(inline[1], inline[2])
+}
+const unknown = []
+for (let i = 0; i < argv.length; i++) {
+  const token = argv[i]
+  if (!token.startsWith('-')) {
+    if (i === 0 || !VALUE_FLAGS.has(argv[i - 1])) unknown.push(token)
+    continue
+  }
+  if (BOOLEAN_FLAGS.has(token)) continue
+  if (VALUE_FLAGS.has(token)) {
+    if (argv[i + 1] === undefined) unknown.push(`${token} (missing value)`)
+    continue
+  }
+  unknown.push(token)
+}
+if (unknown.length > 0) {
+  console.error(`unknown or malformed argument(s): ${unknown.join(', ')}`)
+  console.error(`allowed: ${[...BOOLEAN_FLAGS, ...VALUE_FLAGS].join(' ')}`)
+  console.error('nothing was read and nothing was written; run --help for usage')
+  process.exit(2)
+}
 const flagValue = (name, fallback) => {
   const i = argv.indexOf(name)
   return i === -1 ? fallback : argv[i + 1]
@@ -68,11 +103,81 @@ if (has('--help') || has('-h')) {
   --timestamped-backup
                       name each backup with a timestamp instead of overwriting the
                       single settings.yaml.bak-reasoning-efforts
+  --decide <spec>     record an answer: <route>/<model>=<levels|false|skip>
+  --evidence <kind>   with --decide: "user" (default) or "vendor" (requires --source)
+  --source <url>      the citation for an --evidence vendor fact
+  --default-effort <level|skip>
+                      level pinned as the default (default: high; skip writes nothing)
+  --self-test         run the shipped fixtures, assert the contract, then exit
   --report <path>     also write the markdown report to this file
-  --json              print machine-readable JSON instead of the markdown report
+  --json              machine-readable output, including verdict and nextAction
 
-Exit codes: 0 nothing to do · 1 changes pending or problems found · 2 environment unreadable`)
+  human-only — never needed to bring a document up to date:
+
+Exit codes: 0 every custom route is covered · 1 something is pending or broken ·
+            2 the environment or the invocation is unusable
+Contract:   ${CONTRACT} (SKILL.md states the contract it expects)`)
   process.exit(0)
+}
+
+// ------------------------------------------------------------------ self-test
+// The gate the agent runs before touching a real document: it drives the writer against
+// both shipped fixtures in a temp directory and asserts the contract. Exit 0 means this
+// build behaves the way SKILL.md says on this machine — the same assertions on Windows,
+// macOS and Linux, so a platform-specific breakage surfaces before the user's settings do.
+if (has('--self-test')) {
+  const yaml = loadYaml([SKILL_DIR])
+  if (yaml === undefined) {
+    console.error('self-test: js-yaml is unreachable (it ships with DSH), so nothing can be checked')
+    process.exit(2)
+  }
+  const writer = fileURLToPath(import.meta.url)
+  const tmp = mkdtempSync(join(tmpdir(), 'dsh-reasoning-selftest-'))
+  const results = []
+  const check = (name, ok, detail) => results.push({ name, ok: ok === true, detail })
+  const modelOf = (doc, routeId, modelId) => (doc?.['llm-pi-ai']?.providers?.[routeId]?.models ?? []).find((m) => m?.id === modelId)
+  const levelsOf = (doc, routeId, modelId) => {
+    const declared = modelOf(doc, routeId, modelId)?.reasoningEfforts
+    if (declared === undefined) return undefined
+    if (declared === false) return false
+    return Object.keys(declared).join(',')
+  }
+  const runFixture = (fixture) => {
+    const target = join(tmp, fixture)
+    copyFileSync(join(SKILL_DIR, 'scripts', fixture), target)
+    const before = yaml.load(readFileSync(target, 'utf8'))
+    const status = spawnSync(process.execPath, [writer, '--settings', target, '--apply'], { stdio: 'ignore' }).status
+    return { before, after: yaml.load(readFileSync(target, 'utf8')), status }
+  }
+
+  // Fixture A: a catalog model, a model only other gateways attest to, and a model that does
+  // not reason. Nothing sources union-alpha, so it must stay unwritten, the route default
+  // must be withheld, and the run must say so with a non-zero exit.
+  const a = runFixture('fixture-settings.yaml')
+  check('A: a catalog model gets the levels the catalog declares', levelsOf(a.after, 'fixture-gateway', 'glm-5.3') === 'low,high,max', levelsOf(a.after, 'fixture-gateway', 'glm-5.3'))
+  check('A: a model with no evidence is left unwritten', levelsOf(a.after, 'fixture-gateway', 'union-alpha') === undefined, String(levelsOf(a.after, 'fixture-gateway', 'union-alpha')))
+  check('A: a non-reasoning model is declared explicitly false', levelsOf(a.after, 'fixture-bedrock', 'mistral.ministral-3-14b-instruct') === false, String(levelsOf(a.after, 'fixture-bedrock', 'mistral.ministral-3-14b-instruct')))
+  check('A: no route default while a model is undecided', a.after?.['llm-pi-ai']?.providers?.['fixture-gateway']?.reasoning === undefined, String(a.after?.['llm-pi-ai']?.providers?.['fixture-gateway']?.reasoning))
+  check('A: unrelated sections survive', a.after?.locale?.preference === 'zh')
+  check('A: exits 1 while a decision is pending', a.status === 1, `exit ${a.status}`)
+
+  // Fixture B: the built-in boundary. A catalog route, a catalog route carrying a model the
+  // catalog does not know, and the native llm-deepseek namespace must come back untouched;
+  // the custom route and agent-default-model are the only places allowed to change.
+  const b = runFixture('fixture-builtin-settings.yaml')
+  const same = (x, y) => JSON.stringify(x) === JSON.stringify(y)
+  check('B: the catalog route is untouched', same(b.after?.['llm-pi-ai']?.providers?.deepseek, b.before['llm-pi-ai'].providers.deepseek))
+  check('B: a catalog route carrying an unknown model is untouched', same(b.after?.['llm-pi-ai']?.providers?.['opencode-go'], b.before['llm-pi-ai'].providers['opencode-go']))
+  check('B: llm-deepseek is untouched', same(b.after?.['llm-deepseek'], b.before['llm-deepseek']))
+  check('B: the custom route is covered', levelsOf(b.after, 'my-gateway', 'glm-5.3') === 'low,high,max', levelsOf(b.after, 'my-gateway', 'glm-5.3'))
+  check('B: agent-default-model gets the pinned level', b.after?.['agent-default-model']?.reasoningEffort === 'high', String(b.after?.['agent-default-model']?.reasoningEffort))
+  check('B: exits 1 while a decision is pending', b.status === 1, `exit ${b.status}`)
+
+  const failed = results.filter((r) => !r.ok)
+  for (const r of results) console.log(`${r.ok ? 'ok  ' : 'FAIL'}  ${r.name}${r.ok || r.detail === undefined ? '' : `  (got ${r.detail})`}`)
+  console.log(`\nself-test ${results.length - failed.length}/${results.length} · contract ${CONTRACT}${failed.length === 0 ? ' · this build behaves as documented here' : ' · STOP: this build does not behave as documented'}`)
+  rmSync(tmp, { recursive: true, force: true })
+  process.exit(failed.length === 0 ? 0 : 1)
 }
 
 // --------------------------------------------------------------------- restore
@@ -549,6 +654,8 @@ function buildReport() {
   out.push(`- pi-ai 目录：${catalog.providers.size} 个 provider${catalog.available ? '' : '（**未找到，能力无从判定**）'}`)
   out.push(`- compat gates：${gates.available ? '已解析' : `**不可用**（${gates.reason}）→ 跳过 compat 结论`}`)
   out.push(`- 模式：${doApply ? '**apply（会写盘）**' : 'dry-run（加 `--apply` 才写盘）'}${doFix ? ' · --fix' : ''}${doStrict ? ' · --strict' : ''}${doFixRoutes ? ' · --fix-routes' : ''}`)
+  out.push(`- 契约：contract ${CONTRACT}${scope === 'partial' ? ' · **部分模式**：`--route` 限定了路由，exit 0 只代表这些路由已覆盖' : ' · 覆盖范围内全部自定义路由'}`)
+  out.push(`- **结论 ${verdict}** → 下一步：**${nextAction}**`)
   out.push('')
 
   out.push('## 自定义提供方（可写入）')
@@ -741,14 +848,19 @@ function buildReport() {
 
   out.push('## 下一步')
   out.push('')
-  if (!doApply) {
-    out.push('1. 干跑无误后加 `--apply` 落盘（会自动备份并逐路径校验）。')
-    out.push('2. 刷新 GUI 或重开一个 dsh 进程，然后在 `/model` 选择器的 **Effort** 面板里确认档位。')
+  if (verdict === 'covered') {
+    out.push(`- 结论 **covered**：范围内的自定义路由上，每个模型都有显式声明${scope === 'partial' ? '（部分模式）' : ''}。`)
+    out.push('- 刷新页面（或在 `/model` 选择器里重新选一次模型）后在 **Effort** 面板确认：没有 `Default` 项、预选 High。')
+    out.push('- 档位"被列出"不等于"被兑现"：`--probe` 能确认网关接受该取值，但**不能**证明思考深度真的变了。')
+  } else if (verdict === 'blocked') {
+    out.push('- 结论 **blocked**：有写入被拒绝或校验失败，文档未被改动。先按上面的 ❌ 信息修环境，再重跑同一命令。')
   } else {
-    out.push('1. 刷新页面（或在 `/model` 选择器里重新选一次模型）后在 **Effort** 面板确认档位。')
-    out.push('2. 若档位没出现，重开一个 dsh 进程；若仍不对，用 `--restore latest` 回滚。')
+    out.push(`- 结论 **${verdict}**，下一步 **${nextAction}**。按下面这些命令原样执行即可，不需要自行推导：`)
+    out.push('')
+    out.push('```')
+    for (const c of commands) out.push(c)
+    out.push('```')
   }
-  out.push('3. 档位"被列出"不等于"被兑现"：`--probe` 可发一次最小请求确认网关接受该取值，但它仍不能证明思考深度真的变了。')
   out.push('')
   return out.join('\n')
 }
@@ -893,6 +1005,68 @@ if (doApply && text !== original && validation.ok) {
 }
 
 // ---------------------------------------------------------------------- output
+// ---------------------------------------------------------------------- verdict
+// One machine-readable conclusion, so an agent does not have to interpret a report. The
+// exit code follows it exactly: 0 only for `covered`, which means every model on every
+// custom route in scope has an explicit declaration *and* no route default was withheld.
+const scope = onlyRoutes.size === 0 ? 'all' : 'partial'
+const coverage = routes
+  .filter((r) => !catalogProviderIds.has(r.id))
+  .map((r) => {
+    const items = plan.filter((i) => i.route === r.id)
+    return {
+      route: r.id,
+      models: items.length,
+      withLevels: items.filter((i) => typeof i.target === 'object' && i.target !== null).length,
+      nonReasoning: items.filter((i) => i.target === false).length,
+      undecided: items.filter((i) => i.action === 'needs-decision').length,
+    }
+  })
+const blockedDefaults = routeDefaults.filter((e) => e.action === 'blocked')
+const defaultWrites = [
+  ...routeDefaults.filter((e) => e.action === 'insert' || e.action === 'replace'),
+  ...(agentDefault.action === 'insert' || agentDefault.action === 'replace' ? ['agent-default-model'] : []),
+]
+const pendingWork = actions.length > 0 || conflicts.length > 0 || defaultWrites.length > 0
+
+let verdict
+if (failures.length > 0 || !validation.ok) verdict = 'blocked'
+else if (undecided.length > 0) verdict = 'needs-decision'
+else if (conflicts.length > 0) verdict = 'conflicts'
+else if (blockedDefaults.length > 0) verdict = 'needs-decision'
+else if (!doApply && pendingWork) verdict = 'pending'
+else verdict = 'covered'
+
+const commands = []
+let nextAction = 'none'
+if (verdict === 'blocked') {
+  nextAction = 'report-blocker'
+} else if (undecided.length > 0) {
+  nextAction = 'search-then-ask'
+  for (const item of undecided) {
+    const plans = levelPlans(Array.isArray(item.candidates) ? item.candidates : [])
+    const seen = new Set()
+    for (const levels of [plans?.intersection, plans?.majority, plans?.union]) {
+      if (!Array.isArray(levels) || levels.length === 0) continue
+      const key = levels.join(',')
+      if (seen.has(key)) continue
+      seen.add(key)
+      commands.push(`node scripts/apply-reasoning-efforts.mjs --decide ${item.route}/${item.model}=${key} --apply`)
+    }
+    commands.push(`node scripts/apply-reasoning-efforts.mjs --decide ${item.route}/${item.model}=false --apply`)
+    commands.push(`node scripts/apply-reasoning-efforts.mjs --decide ${item.route}/${item.model}=skip --apply`)
+  }
+} else if (conflicts.length > 0) {
+  nextAction = 'resolve-conflicts'
+  commands.push('node scripts/apply-reasoning-efforts.mjs --fix --apply')
+} else if (blockedDefaults.length > 0) {
+  nextAction = 'decide-route-default'
+  for (const entry of blockedDefaults) commands.push(`node scripts/apply-reasoning-efforts.mjs --default-effort skip --route ${entry.route} --apply`)
+} else if (verdict === 'pending') {
+  nextAction = 'apply'
+  commands.push('node scripts/apply-reasoning-efforts.mjs --apply')
+}
+
 const report = buildReport()
 if (reportPath !== undefined) {
   const target = resolve(reportPath)
@@ -902,9 +1076,14 @@ if (reportPath !== undefined) {
 
 if (asJson) {
   console.log(JSON.stringify({
+    contract: CONTRACT,
     settings: settingsPath,
     dsh: { root: install.label, version, piAiCatalog: catalog.providers.size, compatGates: gates.available },
-    mode: { apply: doApply, fix: doFix, strict: doStrict, fixRoutes: doFixRoutes, probe: doProbe },
+    mode: { apply: doApply, fix: doFix, strict: doStrict, fixRoutes: doFixRoutes, probe: doProbe, scope },
+    verdict,
+    nextAction,
+    commands,
+    coverage,
     plan,
     moves: moves.map((m) => ({ route: m.route, model: m.model, catalogApi: m.catalogApi, routeApi: m.routeApi })),
     readOnly,
@@ -928,18 +1107,6 @@ if (asJson) {
   }
 }
 
-// A model awaiting a decision is unfinished work, not a success: it must not be
-// possible to read a clean exit as "every model is covered". A route whose default
-// could not be written counts too — that is the requirement "no Default entry"
-// going unmet, and the user is the one who can resolve it (split the route, or
-// accept the provider default).
-const pending =
-  actions.length > 0 ||
-  conflicts.length > 0 ||
-  undecided.length > 0 ||
-  routeDefaults.some((e) => e.action === 'insert' || e.action === 'replace' || e.action === 'conflict' || e.action === 'blocked') ||
-  agentDefault.action === 'insert' ||
-  agentDefault.action === 'replace' ||
-  agentDefault.action === 'conflict'
-const broken = failures.length > 0 || !validation.ok
-process.exit(broken ? 1 : pending && !doApply ? 1 : 0)
+// A model awaiting a decision is unfinished work, not a success: it must not be possible
+// to read a clean exit as "every model is covered". The exit code follows the verdict.
+process.exit(verdict === 'covered' ? 0 : 1)
