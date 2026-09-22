@@ -3,29 +3,40 @@
 #  deepseek     - a route named after a catalog provider, serving catalog models
 #  opencode-go  - a catalog route that ALSO carries a model the catalog does not know
 #  my-gateway   - a genuinely custom route
-#  llm-deepseek - the native built-in adapter section
-llm-pi-ai:
-  providers:
-    deepseek:
-      apiKeyEnv: DS_KEY
-      models:
-        - id: deepseek-v4-flash
-        - id: deepseek-v4-pro
-    opencode-go:
-      apiKeyEnv: OG_KEY
-      models:
-        - id: glm-5.3
-        - id: totally-unknown-model
-    my-gateway:
-      apiKeyEnv: MG_KEY
-      baseURL: https://opencode.ai/zen/go/v1
-      api: openai-completions
-      models:
-        - id: glm-5.3
-        - id: minimax-m2.5
-llm-deepseek: {}
-locale:
-  preference: zh
-agent-default-model:
-  provider: my-gateway
-  model: glm-5.3
+#  llm-deepseek - the native built-in adapter row (a row is just an id and a config)
+#
+# Everything above is inside the profile patch's `llm-pi-ai` row, except `llm-deepseek`, which is
+# its own row and must come back untouched.
+- id: llm-pi-ai
+  name: "@deepseek-ai/dsh-llm-pi-ai"
+  config:
+    providers:
+      deepseek:
+        apiKeyEnv: DS_KEY
+        models:
+          - id: deepseek-v4-flash
+          - id: deepseek-v4-pro
+      opencode-go:
+        apiKeyEnv: OG_KEY
+        models:
+          - id: glm-5.3
+          - id: totally-unknown-model
+      my-gateway:
+        apiKeyEnv: MG_KEY
+        baseURL: https://opencode.ai/zen/go/v1
+        api: openai-completions
+        models:
+          - id: glm-5.3
+          - id: minimax-m2.5
+- id: llm-deepseek
+  name: "@deepseek-ai/dsh-llm-deepseek"
+  config: {}
+- id: locale
+  name: "@deepseek-ai/dsh-client-locale"
+  config:
+    preference: zh
+- id: agent-default-model
+  name: "@deepseek-ai/dsh-agent-default-model"
+  config:
+    provider: my-gateway
+    model: glm-5.3

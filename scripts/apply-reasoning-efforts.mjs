@@ -1,20 +1,25 @@
 #!/usr/bin/env node
 /**
- * apply-reasoning-efforts.mjs — give every model on a hand-declared
- * `llm-pi-ai` route the reasoning-effort levels it actually has.
+ * apply-reasoning-efforts.mjs — give every model on a hand-declared `llm-pi-ai` route the
+ * reasoning-effort levels it actually has.
  *
- * Built-in providers are never written. A route whose key is a pi-ai catalog
- * provider id inherits its capabilities from the catalog and is reported
- * read-only; only routes the catalog does not know (`declared: true` in DSH's
- * own terms) are edited, because those are the ones whose models silently have
- * no levels at all.
+ * The document it edits is a DSH **profile patch**,
+ * `$DSH_HOME/profiles/<profile>/cordis.patch.yml`: a top-level sequence of loader entries, one
+ * of which is `- id: llm-pi-ai` and carries `config.providers.<route>`. That file replaced
+ * `settings.yaml`, which DSH 0.1.7 imports once on boot and then renames — so the old file is
+ * no longer read by DSH and this skill does not write it.
  *
- * The default is a dry run: nothing is written unless `--apply` is passed, and
- * every write is preceded by a timestamped backup and followed by a full
- * re-parse plus a path-level diff against what was intended.
+ * Built-in providers are never written. A route whose key is a pi-ai catalog provider id
+ * inherits its capabilities from the catalog and is reported read-only; only routes the catalog
+ * does not know (`declared: true` in DSH's own terms) are edited, because those are the ones
+ * whose models silently have no levels at all.
  *
- * Exit codes: 0 nothing to do, 1 changes pending or problems found, 2 the
- * environment could not be read (install, js-yaml, or the settings document).
+ * The default is a dry run: nothing is written unless `--apply` is passed, and every write is
+ * preceded by a backup and followed by a full re-parse plus a path-level diff against what was
+ * intended.
+ *
+ * Exit codes: 0 nothing to do, 1 changes pending or problems found, 2 the environment could not
+ * be read (install, js-yaml, or the profile patch), or an unexpected failure.
  */
 import { copyFileSync, existsSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, rmSync, statSync, writeFileSync } from 'node:fs'
 import { basename, dirname, join, resolve } from 'node:path'
@@ -23,17 +28,16 @@ import { spawnSync } from 'node:child_process'
 import { fileURLToPath } from 'node:url'
 
 import {
-  analyzeLine,
-  children,
   createRoute,
+  entryConfigOf,
   joinText,
   listRoutes,
   locateRoute,
   moveModelItem,
-  removeNamespaceScalar,
+  providersOf,
+  removePatchConfigScalar,
   removeRouteScalar,
   splitText,
-  upsertNamespaceScalar,
   upsertReasoningEfforts,
 } from './lib/yaml-edit.mjs'
 import {
@@ -47,14 +51,13 @@ import {
   toEffortsMap,
 } from './lib/capability.mjs'
 import {
-  candidateRoots,
-  defaultSettingsPath,
   dshVersion,
   findInstall,
   loadCatalog,
   loadCompatGates,
   loadYaml,
   normalizeBaseUrl,
+  resolveTarget,
 } from './lib/dsh-install.mjs'
 
 const SKILL_DIR = resolve(dirname(fileURLToPath(import.meta.url)), '..')
@@ -101,10 +104,39 @@ const flagValue = (name, fallback) => {
 const flagAll = (name) => argv.flatMap((a, i) => (a === name && argv[i + 1] !== undefined && !argv[i + 1].startsWith('--') ? [argv[i + 1]] : []))
 const has = (name) => argv.includes(name)
 
+/**
+ * An unexpected failure must not leave the caller reading exit `1`.
+ *
+ * `1` means "work is pending" — a state an agent reacts to by running the suggested command. A
+ * crash reported as `1` therefore gets treated as normal progress. `2` means "the invocation or
+ * the environment is unusable", which is what a crash is, and it makes the caller stop and look.
+ */
+process.on('uncaughtException', (error) => {
+  console.error(`❌ unexpected failure: ${error?.stack ?? error}`)
+  console.error('Nothing beyond the last completed step was changed; the backup file holds the state from before this run.')
+  process.exit(2)
+})
+
+/**
+ * The profile patch this run applies to, or exit 2 with the reason and the places that were looked
+ * at (see `resolveTarget` in lib/dsh-install.mjs — the checker resolves it the same way).
+ */
+function discoverTargets() {
+  const resolved = resolveTarget(flagValue('--settings', undefined))
+  if (resolved.error !== undefined) {
+    console.error(resolved.error)
+    for (const path of resolved.candidates ?? []) console.error(`  ${path}`)
+    if (resolved.hint !== undefined) console.error(resolved.hint)
+    process.exit(2)
+  }
+  return [resolved.target]
+}
+
 if (has('--help') || has('-h')) {
   console.log(`usage: node apply-reasoning-efforts.mjs [options]
 
-  --settings <path>   settings document (default: $DSH_HOME/settings.yaml)
+  --settings <path>   process one profile patch (repeatable; default: every profile patch
+                      under $DSH_HOME/profiles that configures llm-pi-ai)
   --dsh-root <path>   dsh install root holding node_modules (default: discovered)
   --route <name>      limit to these routes (repeatable; default: every custom route)
   --apply             write the document (default: dry run, prints the plan)
@@ -115,7 +147,7 @@ if (has('--help') || has('-h')) {
   --restore <ref>     restore "latest" backup, or a named backup file, then exit
   --timestamped-backup
                       name each backup with a timestamp instead of overwriting the
-                      single settings.yaml.bak-reasoning-efforts
+                      single <document>.bak-reasoning-efforts
   --decide <spec>     record an answer: <route>/<model>=<levels|false|skip>
   --evidence <kind>   with --decide: "user" (default) or "vendor" (requires --source)
   --source <url>      the citation for an --evidence vendor fact
@@ -139,7 +171,8 @@ Contract:   ${CONTRACT} (SKILL.md states the contract it expects)`)
 // build behaves the way SKILL.md says on this machine — the same assertions on Windows,
 // macOS and Linux, so a platform-specific breakage surfaces before the user's settings do.
 if (has('--self-test')) {
-  const yaml = loadYaml([SKILL_DIR])
+  const installArg = flagValue('--dsh-root', undefined)
+  const yaml = loadYaml([SKILL_DIR, findInstall(installArg).root])
   if (yaml === undefined) {
     console.error('self-test: js-yaml is unreachable (it ships with DSH), so nothing can be checked')
     process.exit(2)
@@ -148,7 +181,7 @@ if (has('--self-test')) {
   const tmp = mkdtempSync(join(tmpdir(), 'dsh-reasoning-selftest-'))
   const results = []
   const check = (name, ok, detail) => results.push({ name, ok: ok === true, detail })
-  const modelOf = (doc, routeId, modelId) => (doc?.['llm-pi-ai']?.providers?.[routeId]?.models ?? []).find((m) => m?.id === modelId)
+  const modelOf = (doc, routeId, modelId) => (providersOf(doc)?.[routeId]?.models ?? []).find((m) => m?.id === modelId)
   const levelsOf = (doc, routeId, modelId) => {
     const declared = modelOf(doc, routeId, modelId)?.reasoningEfforts
     if (declared === undefined) return undefined
@@ -162,28 +195,30 @@ if (has('--self-test')) {
     const status = spawnSync(process.execPath, [writer, '--settings', target, '--apply'], { stdio: 'ignore' }).status
     return { before, after: yaml.load(readFileSync(target, 'utf8')), status }
   }
+  const routeDefaultsOf = (doc, routeId) => providersOf(doc)?.[routeId]?.reasoning
+  const relatedSurvive = (doc) => entryConfigOf(doc, 'locale')?.preference === 'zh'
 
   // Fixture A: a catalog model, a model only other gateways attest to, and a model that does
-  // not reason. Nothing sources union-alpha, so it must stay unwritten, the route default
-  // must be withheld, and the run must say so with a non-zero exit.
+  // not reason. Nothing sources union-alpha, so it must stay unwritten, no route default may be
+  // written, and the run must say so with a non-zero exit.
   const a = runFixture('fixture-settings.yaml')
   check('A: a catalog model gets the levels the catalog declares', levelsOf(a.after, 'fixture-gateway', 'glm-5.3') === 'low,high,max', levelsOf(a.after, 'fixture-gateway', 'glm-5.3'))
   check('A: a model with no evidence is left unwritten', levelsOf(a.after, 'fixture-gateway', 'union-alpha') === undefined, String(levelsOf(a.after, 'fixture-gateway', 'union-alpha')))
   check('A: a non-reasoning model is declared explicitly false', levelsOf(a.after, 'fixture-bedrock', 'mistral.ministral-3-14b-instruct') === false, String(levelsOf(a.after, 'fixture-bedrock', 'mistral.ministral-3-14b-instruct')))
-  check('A: no route default is ever written', a.after?.['llm-pi-ai']?.providers?.['fixture-gateway']?.reasoning === undefined, String(a.after?.['llm-pi-ai']?.providers?.['fixture-gateway']?.reasoning))
-  check('A: unrelated sections survive', a.after?.locale?.preference === 'zh')
+  check('A: no route default is ever written', routeDefaultsOf(a.after, 'fixture-gateway') === undefined, String(routeDefaultsOf(a.after, 'fixture-gateway')))
+  check('A: unrelated rows survive', relatedSurvive(a.after))
   check('A: exits 1 while a decision is pending', a.status === 1, `exit ${a.status}`)
 
   // Fixture B: the built-in boundary. A catalog route, a catalog route carrying a model the
-  // catalog does not know, and the native llm-deepseek namespace must come back untouched;
-  // the custom route and agent-default-model are the only places allowed to change.
+  // catalog does not know, and the native llm-deepseek row must come back untouched; the custom
+  // route is the only place allowed to change.
   const b = runFixture('fixture-builtin-settings.yaml')
   const same = (x, y) => JSON.stringify(x) === JSON.stringify(y)
-  check('B: the catalog route is untouched', same(b.after?.['llm-pi-ai']?.providers?.deepseek, b.before['llm-pi-ai'].providers.deepseek))
-  check('B: a catalog route carrying an unknown model is untouched', same(b.after?.['llm-pi-ai']?.providers?.['opencode-go'], b.before['llm-pi-ai'].providers['opencode-go']))
-  check('B: llm-deepseek is untouched', same(b.after?.['llm-deepseek'], b.before['llm-deepseek']))
+  check('B: the catalog route is untouched', same(providersOf(b.after)?.deepseek, providersOf(b.before)?.deepseek))
+  check('B: a catalog route carrying an unknown model is untouched', same(providersOf(b.after)?.['opencode-go'], providersOf(b.before)?.['opencode-go']))
+  check('B: the llm-deepseek row is untouched', same(entryConfigOf(b.after, 'llm-deepseek'), entryConfigOf(b.before, 'llm-deepseek')))
   check('B: the custom route is covered', levelsOf(b.after, 'my-gateway', 'glm-5.3') === 'low,high,max', levelsOf(b.after, 'my-gateway', 'glm-5.3'))
-  check('B: the global default is not written (one value cannot be checked against every model)', b.after?.['agent-default-model']?.reasoningEffort === undefined, String(b.after?.['agent-default-model']?.reasoningEffort))
+  check('B: the global default is not written (one value cannot be checked against every model)', entryConfigOf(b.after, 'agent-default-model')?.reasoningEffort === undefined, String(entryConfigOf(b.after, 'agent-default-model')?.reasoningEffort))
   check('B: exits 1 while a decision is pending', b.status === 1, `exit ${b.status}`)
 
   // Fixture C: the regression that mattered in practice. A route default of `high` on a route that
@@ -191,11 +226,11 @@ if (has('--self-test')) {
   // it to every model on the route and that model would fail with UNSUPPORTED_REASONING_EFFORT —
   // and the old check order ("does the value already match?") never looked.
   const c = runFixture('fixture-breaking-default.yaml')
-  check('C: the route default that breaks a model is removed', c.after?.['llm-pi-ai']?.providers?.['mixed-route']?.reasoning === undefined, String(c.after?.['llm-pi-ai']?.providers?.['mixed-route']?.reasoning))
-  check('C: a global default unsafe for the default model is removed', c.after?.['agent-default-model']?.reasoningEffort === undefined, String(c.after?.['agent-default-model']?.reasoningEffort))
+  check('C: the route default that breaks a model is removed', routeDefaultsOf(c.after, 'mixed-route') === undefined, String(routeDefaultsOf(c.after, 'mixed-route')))
+  check('C: a global default unsafe for the default model is removed', entryConfigOf(c.after, 'agent-default-model')?.reasoningEffort === undefined, String(entryConfigOf(c.after, 'agent-default-model')?.reasoningEffort))
   check('C: the model with real levels is still covered', levelsOf(c.after, 'mixed-route', 'glm-5.3') === 'low,high,max', levelsOf(c.after, 'mixed-route', 'glm-5.3'))
   check('C: the model with no levels is left unwritten', levelsOf(c.after, 'mixed-route', 'fixture-unknown-model') === undefined, String(levelsOf(c.after, 'mixed-route', 'fixture-unknown-model')))
-  check('C: unrelated sections survive', c.after?.locale?.preference === 'zh')
+  check('C: unrelated rows survive', relatedSurvive(c.after))
   check('C: exits 1 while a decision is pending', c.status === 1, `exit ${c.status}`)
 
   // Fixture D: the same field, but safe for every model on the route. It still has to be removed —
@@ -205,9 +240,10 @@ if (has('--self-test')) {
   // offers `high`, so it stays. With every model covered, this is also the fixture that must reach
   // exit 0 — the only one where "nothing pending" is the correct answer.
   const d = runFixture('fixture-pinned-default.yaml')
-  check('D: a route default that no model objects to is removed as well', d.after?.['llm-pi-ai']?.providers?.['pinned-route']?.reasoning === undefined, String(d.after?.['llm-pi-ai']?.providers?.['pinned-route']?.reasoning))
+  check('D: a route default that no model objects to is removed as well', routeDefaultsOf(d.after, 'pinned-route') === undefined, String(routeDefaultsOf(d.after, 'pinned-route')))
   check('D: every model keeps the levels the catalog declares', levelsOf(d.after, 'pinned-route', 'glm-5.3') === 'low,high,max' && levelsOf(d.after, 'pinned-route', 'glm-5.3-flash') === 'low,high,max', `${levelsOf(d.after, 'pinned-route', 'glm-5.3')} / ${levelsOf(d.after, 'pinned-route', 'glm-5.3-flash')}`)
-  check('D: a global default the default model supports is left alone', d.after?.['agent-default-model']?.reasoningEffort === 'high', String(d.after?.['agent-default-model']?.reasoningEffort))
+  check('D: a global default the default model supports is left alone', entryConfigOf(d.after, 'agent-default-model')?.reasoningEffort === 'high', String(entryConfigOf(d.after, 'agent-default-model')?.reasoningEffort))
+  check('D: unrelated rows survive', relatedSurvive(d.after))
   check('D: exits 0 — every model declared and no route default left', d.status === 0, `exit ${d.status}`)
 
   const failed = results.filter((r) => !r.ok)
@@ -217,8 +253,10 @@ if (has('--self-test')) {
   process.exit(failed.length === 0 ? 0 : 1)
 }
 
-// --------------------------------------------------------------------- restore
-const settingsPath = resolve(flagValue('--settings', defaultSettingsPath()))
+// --------------------------------------------------------------- the target(s)
+const targets = discoverTargets()
+const settingsPath = targets[0].path
+const profileLabel = targets[0].profile
 // A single backup file, overwritten on every write, holding the state from *before* the
 // last operation — an apply or a restore. That makes it a one-step undo rather than an
 // archive, which is what the document needs: it is regenerated from the configuration on
@@ -248,8 +286,13 @@ if (restoreRef !== undefined) {
   // second restore toggles back.
   const bytes = readFileSync(source)
   const guard = nextBackupFile()
-  copyFileSync(settingsPath, guard)
-  writeFileSync(settingsPath, bytes)
+  try {
+    copyFileSync(settingsPath, guard)
+    writeFileSync(settingsPath, bytes)
+  } catch (error) {
+    console.error(`❌ could not restore ${settingsPath}: ${error.message}`)
+    process.exit(2)
+  }
   console.log(`restored : ${source}`)
   console.log(`backup   : ${guard} now holds the state this restore replaced`)
   console.log('A running dsh process may need a fresh start to pick this up.')
@@ -376,12 +419,14 @@ function stampName() {
 
 // ------------------------------------------------------------------- discovery
 if (!existsSync(settingsPath)) {
-  console.error(`settings document not found: ${settingsPath}`)
+  console.error(`profile patch not found: ${settingsPath}`)
   process.exit(2)
 }
 const original = readFileSync(settingsPath, 'utf8')
 const install = findInstall(dshRootArg)
-const yaml = loadYaml([dirname(settingsPath), SKILL_DIR])
+// The parser is the one DSH itself ships, resolved from the install that was just discovered —
+// not from `$DSH_HOME` alone, so a relocated or globally installed DSH still resolves it.
+const yaml = loadYaml([dirname(settingsPath), SKILL_DIR, install.root])
 if (yaml === undefined) {
   console.error('could not load js-yaml (it ships with DSH; pass --settings from a directory that can reach it)')
   process.exit(2)
@@ -395,7 +440,7 @@ let doc
 try {
   doc = yaml.load(original)
 } catch (error) {
-  console.error(`settings document does not parse: ${error.message}`)
+  console.error(`the profile patch does not parse: ${error.message}`)
   process.exit(2)
 }
 
@@ -411,7 +456,7 @@ const routes = listRoutes(parts.lines).filter((r) => onlyRoutes.size === 0 || on
 
 /** Read the *configured* reasoningEfforts map straight out of the parsed document. */
 function configuredEfforts(routeId, modelId) {
-  const model = doc?.['llm-pi-ai']?.providers?.[routeId]?.models?.find?.((m) => m?.id === modelId)
+  const model = providersOf(doc)?.[routeId]?.models?.find?.((m) => m?.id === modelId)
   if (model === undefined) return undefined
   return { has: Object.prototype.hasOwnProperty.call(model, 'reasoningEfforts'), value: model.reasoningEfforts }
 }
@@ -618,7 +663,7 @@ for (const route of routes) {
   if (catalogProviderIds.has(route.id)) continue
   const items = plan.filter((i) => i.route === route.id)
   if (items.length === 0) continue
-  const current = doc?.['llm-pi-ai']?.providers?.[route.id]?.reasoning
+  const current = providersOf(doc)?.[route.id]?.reasoning
   const describe = (item) =>
     item.target === false
       ? `\`${item.model}\` 不支持思考`
@@ -656,9 +701,9 @@ for (const route of routes) {
 // session.
 const agentDefault = { action: 'none', why: undefined }
 {
-  const section = doc?.['agent-default-model']
+  const section = entryConfigOf(doc, 'agent-default-model')
   const current = section?.reasoningEffort
-  if (section === undefined) agentDefault.why = 'settings 里没有 `agent-default-model` 段'
+  if (section === undefined) agentDefault.why = '该 profile 补丁里没有 `agent-default-model` 条目'
   else if (current === undefined) agentDefault.why = '未设置（不主动写入：它是全局值，只作用于新建会话，选择器一换模型就会改写它）'
   else {
     const item = plan.find((i) => i.route === section.provider && i.model === section.model)
@@ -701,7 +746,7 @@ function buildReport() {
   const out = []
   out.push('# 思考强度核对报告（自定义提供方）')
   out.push('')
-  out.push(`- settings：\`${settingsPath}\``)
+  out.push(`- 目标文档：\`${settingsPath}\`${profileLabel === undefined ? '' : `（profile ${profileLabel}）`}`)
   out.push(`- dsh 安装：\`${install.label}\`${version === undefined ? '' : ` · dsh ${version}`}`)
   out.push(`- pi-ai 目录：${catalog.providers.size} 个 provider${catalog.available ? '' : '（**未找到，能力无从判定**）'}`)
   out.push(`- compat gates：${gates.available ? '已解析' : `**不可用**（${gates.reason}）→ 跳过 compat 结论`}`)
@@ -970,7 +1015,7 @@ if (doApply) {
     } else if (!removed.unchanged) failures.push(`\`${entry.route}\` 移除路由默认：${removed.reason}`)
   }
   if (agentDefault.action === 'remove-unsafe') {
-    const removed = removeNamespaceScalar(text, 'agent-default-model', 'reasoningEffort')
+    const removed = removePatchConfigScalar(text, 'agent-default-model', 'reasoningEffort')
     if (removed.text !== undefined) text = removed.text
     if (removed.changed) applied.push('移除 `agent-default-model.reasoningEffort`（对默认模型不可用，会让新建会话的第一条请求失败）')
     else if (!removed.unchanged) failures.push(`agent-default-model.reasoningEffort：${removed.reason}`)
@@ -1008,8 +1053,12 @@ if (text !== original) {
     const changedPaths = []
     for (const [path, value] of after) if (!before.has(path) || before.get(path) !== value) changedPaths.push(path)
     for (const [path] of before) if (!after.has(path)) changedPaths.push(`${path} (removed)`)
-    const allowed = /^(llm-pi-ai\.providers\.|agent-default-model\.)/
-    const stray = changedPaths.filter((p) => !allowed.test(p))
+    // Only the `llm-pi-ai` row's providers may change, plus the single field this skill removes
+    // from the `agent-default-model` row. `flatten` names a sequence element that carries an `id`
+    // as `[id=<id>]`, so this allow-list does not depend on where a row sits in the file; a
+    // removal arrives as the same path with a ` (removed)` suffix, which is stripped first.
+    const allowed = /^\[id=llm-pi-ai\]\.config\.providers\.|^\[id=agent-default-model\]\.config\.reasoningEffort$/
+    const stray = changedPaths.filter((p) => !allowed.test(p.replace(/ \(removed\)$/, '')))
     validation = { ok: stray.length === 0, changedPaths, stray, doc: reparsed }
     if (stray.length > 0) validation.reason = `编辑越界，改到了预期之外的路径：${stray.join(', ')}`
   }
@@ -1017,7 +1066,7 @@ if (text !== original) {
     for (const item of plan) {
       if (!WRITABLE.has(item.action)) continue
       const routeForModel = moves.some((m) => m.route === item.route && m.model === item.model) ? `${item.route}--${item.catalogApi}` : item.route
-      const got = validation.doc?.['llm-pi-ai']?.providers?.[routeForModel]?.models?.find?.((m) => m?.id === item.model)?.reasoningEfforts
+      const got = providersOf(validation.doc)?.[routeForModel]?.models?.find?.((m) => m?.id === item.model)?.reasoningEfforts
       if (item.target === false) {
         if (got !== false) {
           validation = { ok: false, reason: `校验失败：\`${routeForModel}/${item.model}\` 应为显式 false` }
@@ -1038,11 +1087,11 @@ if (text !== original) {
     for (const entry of routeDefaults) {
       if (!validation.ok) break
       if (entry.action !== 'remove') continue
-      const got = validation.doc?.['llm-pi-ai']?.providers?.[entry.route]?.reasoning
+      const got = providersOf(validation.doc)?.[entry.route]?.reasoning
       if (got !== undefined) validation = { ok: false, reason: `校验失败：\`${entry.route}\` 的 reasoning 未被移除（读回 ${String(got)}）` }
     }
     if (validation.ok && agentDefault.action === 'remove-unsafe') {
-      const got = validation.doc?.['agent-default-model']?.reasoningEffort
+      const got = entryConfigOf(validation.doc, 'agent-default-model')?.reasoningEffort
       if (got !== undefined) validation = { ok: false, reason: `校验失败：agent-default-model.reasoningEffort 未被移除（读回 ${String(got)}）` }
     }
   }
@@ -1051,8 +1100,19 @@ if (text !== original) {
 let backupPath
 if (doApply && text !== original && validation.ok) {
   backupPath = nextBackupFile()
-  copyFileSync(settingsPath, backupPath)
-  writeFileSync(settingsPath, text, 'utf8')
+  // The write is the one step that can fail for reasons outside this program's control — a
+  // read-only file, a missing directory, a lock held by the running DSH. It is reported as exit 2
+  // ("this invocation could not run"), never as exit 1 ("there is work to do"), because an agent
+  // reads 1 as ordinary progress and would retry the same command forever.
+  try {
+    copyFileSync(settingsPath, backupPath)
+    writeFileSync(settingsPath, text, 'utf8')
+  } catch (error) {
+    console.error(`❌ could not write ${settingsPath}: ${error.message}`)
+    console.error(`The document was NOT changed. Backup attempted: ${backupPath}`)
+    console.error('If DSH or an editor holds the file, close it and run the same command again.')
+    process.exit(2)
+  }
 }
 
 // ---------------------------------------------------------------------- output

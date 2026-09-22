@@ -1,33 +1,39 @@
 # Fixture for exercising the writer's contracts. Never applied to a real install:
-#   node scripts/apply-reasoning-efforts.mjs --settings .research/fixture-settings.yaml
+#   node scripts/apply-reasoning-efforts.mjs --settings scripts/fixture-settings.yaml
+#
+# Shape: a DSH profile patch (`$DSH_HOME/profiles/<profile>/cordis.patch.yml`), i.e. a top-level
+# sequence of loader entries. Providers live in the `llm-pi-ai` row's `config.providers`.
 #
 # Covers every outcome the contract promises:
 #   fixture-gateway/glm-5.3                  catalog knows it        -> declare
 #   fixture-gateway/minimax-m2.5             siblings attest it      -> ask, with candidates
 #   fixture-gateway/union-alpha              nobody attests it       -> ask, blind
 #   fixture-bedrock/mistral.ministral-3-14b-instruct  does not reason -> declare false explicitly
-llm-pi-ai:
-  providers:
-    fixture-gateway:
-      displayName: Fixture Gateway
-      apiKeyEnv: FIXTURE_API_KEY
-      baseURL: https://opencode.ai/zen/go/v1
-      api: openai-completions
-      models:
-        - id: glm-5.3
-          name: glm-5.3
-        - id: minimax-m2.5
-          name: minimax-m2.5
-        - id: union-alpha
-          name: union-alpha
-    fixture-bedrock:
-      displayName: Fixture Bedrock
-      apiKeyEnv: FIXTURE_KEY
-      baseURL: https://bedrock-runtime.us-east-1.amazonaws.com
-      api: openai-completions
-      models:
-        - id: mistral.ministral-3-14b-instruct
-          name: a model that does not reason
-llm-deepseek: {}
-locale:
-  preference: zh
+- id: llm-pi-ai
+  name: "@deepseek-ai/dsh-llm-pi-ai"
+  config:
+    providers:
+      fixture-gateway:
+        displayName: Fixture Gateway
+        apiKeyEnv: FIXTURE_API_KEY
+        baseURL: https://opencode.ai/zen/go/v1
+        api: openai-completions
+        models:
+          - id: glm-5.3
+            name: glm-5.3
+          - id: minimax-m2.5
+            name: minimax-m2.5
+          - id: union-alpha
+            name: union-alpha
+      fixture-bedrock:
+        displayName: Fixture Bedrock
+        apiKeyEnv: FIXTURE_KEY
+        baseURL: https://bedrock-runtime.us-east-1.amazonaws.com
+        api: openai-completions
+        models:
+          - id: mistral.ministral-3-14b-instruct
+            name: a model that does not reason
+- id: locale
+  name: "@deepseek-ai/dsh-client-locale"
+  config:
+    preference: zh

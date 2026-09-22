@@ -10,6 +10,33 @@ git diff 541bad4 HEAD --stat
 git diff 541bad4 HEAD -- SKILL.md
 ```
 
+## Revision 3: the document moved from `settings.yaml` to the profile patch
+
+DSH 0.1.7 removed `settings.yaml`: `dsh-settings` reads it once at boot, renames it to
+`settings.yaml.imported`, and moves each section into the starting profile. The document of record
+is now the **profile patch**, `$DSH_HOME/profiles/<profile>/cordis.patch.yml` — a top-level sequence
+of loader entries, where the provider configuration lives in the `llm-pi-ai` row at
+`config.providers.<route>` and `agent-default-model` is a row of its own. Writing the old file had
+become a no-op: it is imported once and never read again.
+
+| Area | Revision 2 | Now |
+| --- | --- | --- |
+| Target document | `$DSH_HOME/settings.yaml`, assumed | resolved: `--settings <path>`, else the one profile patch that configures `llm-pi-ai`; more than one is reported with `exit 2` instead of picked |
+| Provider location | `llm-pi-ai.providers.<route>` | `[id=llm-pi-ai].config.providers.<route>` |
+| `agent-default-model` | a top-level section | a row of its own; `config.reasoningEffort` is the one field the writer ever removes from it |
+| Path-diff allow-list | `llm-pi-ai.providers.*`, `agent-default-model.*` | `[id=llm-pi-ai].config.providers.*` and `[id=agent-default-model].config.reasoningEffort` (a removal arrives with a ` (removed)` suffix, stripped before the test) |
+| Backup | `settings.yaml.bak-reasoning-efforts` | `<document>.bak-reasoning-efforts`, beside the patch |
+| js-yaml lookup | `$DSH_HOME/profiles/node_modules` and the document's directory | plus the same roots the install search uses, so a relocated or global install still resolves the parser |
+| Crash behaviour | an unexpected failure exited `1` — indistinguishable from "work is pending" | every unexpected failure and every refused write exits `2`, so an agent stops instead of retrying |
+| Fixtures | `settings.yaml` shape | profile-patch shape (the same four scenarios) |
+| Determinism | a catalog tie-break followed directory-read order | ties broken by id, `readdir` sorted, sibling candidates sorted |
+| Encoding | LF and CRLF | plus a UTF-8 BOM, which used to hide the whole document from the line-level locators |
+
+Verified on Windows against a copy of a real 3.7 KB profile patch: 23/23 self-test assertions, a
+13-check robustness suite (determinism, unwritable backup, CRLF, BOM, restore, read-only file), and
+the original failure — a model added through the GUI on a route carrying `reasoning: high` — fixed by
+a single `--apply` that leaves the file byte-identical on the next run.
+
 ## Revision 2: the route default is never written
 
 Same contract version (1), one behavioural reversal, and one piece of machinery that was built,

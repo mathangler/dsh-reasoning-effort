@@ -4,6 +4,56 @@ The DSH internals behind `SKILL.md`. Nothing here is needed to *run* the skill �
 encode all of it. Read it when the user asks "why does it work that way", or when a case does
 not match what the execution path promises.
 
+## Where the settings live: the profile patch
+
+DSH 0.1.7 removed `settings.yaml`. `dsh-settings` still *reads* that file once, at boot, and then
+renames it, moving each top-level section into the profile that is starting:
+
+```js
+// @deepseek-ai/dsh-settings (0.1.7)
+const path = join(profile.home, "settings.yaml")
+if (!existsSync(path)) return
+await rename(path, `${path}.imported`)   // renamed before the first write: a partial import never repeats
+for (const [section, values] of Object.entries(parse(await readFile(imported, "utf8")) ?? {})) {
+  await this.update(LEGACY_SECTION_ENTRIES[section] ?? section, values)
+}
+```
+
+From then on the document of record is the **profile patch**,
+`$DSH_HOME/profiles/<profile>/cordis.patch.yml` — a top-level *sequence* of loader entries:
+
+```yaml
+- id: llm-pi-ai
+  name: "@deepseek-ai/dsh-llm-pi-ai"
+  config:
+    providers:
+      my-gateway:
+        baseURL: https://…
+        models: […]
+- id: agent-default-model
+  name: "@deepseek-ai/dsh-agent-default-model"
+  config:
+    provider: my-gateway
+    model: glm-5.3
+```
+
+So the provider configuration sits at `[<the llm-pi-ai row>].config.providers.<route>` — one level
+deeper than the old top-level `llm-pi-ai.providers.<route>` — and `agent-default-model` is a row of
+its own rather than a top-level section. `profiles/<profile>/cordis.yml` is an empty entry list by
+design ("Edit cordis.patch.yml, not this file"), which is why the patch layer is the only place a
+provider edit can go. The *values* are unchanged: the level rules, the route-default rule and the
+picker all interpret the row's `config` exactly as they interpreted the section.
+
+Two consequences the tools encode:
+
+- The target is resolved, not assumed: `--settings <path>`, else the one profile patch that
+  configures `llm-pi-ai`. More than one is reported with `exit 2` rather than picked, because which
+  profile the user means is not the tool's call, and each document would need its own backup,
+  validation and report.
+- The path-diff allow-list is `[id=llm-pi-ai].config.providers.` plus
+  `[id=agent-default-model].config.reasoningEffort`. `flatten` names a sequence element carrying an
+  `id` as `[id=<id>]`, so the guard does not depend on where a row sits in the file.
+
 ## Why a hand-declared route exposes nothing
 
 > **pi-ai's model metadata is looked up by the route name itself, and the lookup is
@@ -205,13 +255,17 @@ an explicit `--route`, because a migration can break a route that works today.
   formatting survive. A parse-and-dump round trip would not.
 - The parser is **strict**: an unknown flag exits 2 before anything is read. `--flag=value` is
   accepted as well as `--flag value`.
-- `--apply` guarantees, in order: one backup file (`settings.yaml.bak-reasoning-efforts`,
-  overwritten each run, holding the pre-write state) → the edited text is **re-parsed** → the
-  result is diffed **path by path** against the original and refused if anything outside
-  `llm-pi-ai.providers.*` or `agent-default-model.*` changed → every target model is read back
-  and compared to what was intended.
+- `--apply` guarantees, in order: one backup file (`<document>.bak-reasoning-efforts`, written
+  beside the patch, overwritten each run, holding the pre-write state) → the edited text is
+  **re-parsed** → the result is diffed **path by path** against the original and refused if
+  anything outside `[id=llm-pi-ai].config.providers.*` or
+  `[id=agent-default-model].config.reasoningEffort` changed → every target model is read back and
+  compared to what was intended.
+- A write that cannot happen — a read-only file, a locked file, a backup path taken by a
+  directory — is `exit 2` with the reason, never `exit 1`. `1` means "work is pending" and an agent
+  reacts by running the command again; a failure reported that way would be retried forever.
 - Re-running is **idempotent**: an already-correct declaration produces no change, and a run that
-  changes nothing writes no backup.
+  changes nothing writes no backup, so the file comes back byte-identical.
 
 ## Two facts about DSH itself
 
@@ -233,10 +287,10 @@ edit.
   defaults → `where`/`which` last (`DSH_NO_SUBPROCESS=1` skips it).
 - Everything else is Node: `node:path` joins, `\r\n`-tolerant line handling, forward slashes in
   every documented command. Nothing needs bash, `sed`, `jq` or PowerShell.
-- Writing `settings.yaml` means writing outside the session workspace, so a sandbox may require
-  an approval; that prompt is the user's consent, not a workaround. A permissive machine will not
-  prompt for the same command — that difference is environmental, and the script's output and
-  exit code are identical either way.
+- Writing the profile patch means writing outside the session workspace (`$DSH_HOME/profiles/…`),
+  so a sandbox may require an approval; that prompt is the user's consent, not a workaround. A
+  permissive machine will not prompt for the same command — that difference is environmental, and
+  the script's output and exit code are identical either way.
 - Windows: never host a long-lived `dsh` in a background job (killing the job orphans the child,
   which keeps the port and makes the next start fail with `EADDRINUSE`). Recover with
   `netstat -ano | findstr ":<port>"` then `taskkill /PID <pid> /T /F`; `Get-NetTCPConnection` can

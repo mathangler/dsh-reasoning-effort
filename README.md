@@ -5,7 +5,8 @@ gives every model on a *custom* (hand-declared) provider route the thinking /
 reasoning-effort levels it actually has — and answers the one question it cannot answer
 itself by asking you, instead of guessing.
 
-Custom here means exactly what DSH means by it: a route under `llm-pi-ai.providers` whose
+Custom here means exactly what DSH means by it: a provider in the `llm-pi-ai` row of the profile
+patch whose
 key is **not** one of the pi-ai catalog provider ids. Such a route inherits nothing —
 pi-ai is looked up **by route name**, all-or-nothing — so every model on it falls back to
 `reasoning: false` and the picker shows no effort levels at all. This skill derives each
@@ -73,7 +74,8 @@ is ever written, the evidence tiers) and is read only when the user asks why.
 
 ## Install
 
-This skill is DSH-specific: it understands DSH's `settings.yaml` schema, DSH's pi-ai catalog
+This skill is DSH-specific: it understands DSH's profile-patch schema (the `llm-pi-ai` row and its
+`config.providers`), DSH's pi-ai catalog
 and DSH's adapters, and it has nothing to offer any other agent. So it belongs in **DSH's
 own skills root** — the `.dsh` one, never the shared `.agents/skills` root:
 
@@ -205,7 +207,7 @@ For a project-scoped install, delete `<project>/.dsh/skills/dsh-reasoning-effort
 way.
 
 **Uninstalling the skill does not undo its edits.** The `reasoningEfforts` declarations and the
-removal of a route-level `reasoning:` stay in `settings.yaml` — they are ordinary configuration,
+removal of a route-level `reasoning:` stay in the profile patch — they are ordinary configuration,
 not something the skill injects at runtime. Run `--restore latest` *before* removing the directory
 (see [Rollback](#rollback)), or delete the declarations by hand.
 
@@ -250,31 +252,42 @@ remain, and neither is a silent failure:
 
 ## Configure
 
-### What it writes into `settings.yaml`
+### What it writes, and into which file
+
+The document is a **profile patch** — `$DSH_HOME/profiles/<profile>/cordis.patch.yml` — which is
+where DSH 0.1.7 keeps its settings (it imports the old `settings.yaml` once at boot and renames it,
+so the old file is no longer read). The skill finds the patch itself; `--settings <path>` pins one
+when a machine has several.
 
 ```yaml
-llm-pi-ai:
-  providers:
-    my-gateway:                       # a custom route: the key is not a catalog provider id
-      baseURL: https://…
-      api: openai-completions
-      # no `reasoning:` here, ever: it is route-wide, and one model without that level
-      # (a non-reasoning model included) would fail every request with
-      # UNSUPPORTED_REASONING_EFFORT. The picker's "默认" row is the intended state.
-      models:
-        - id: glm-5.3
-          reasoningEfforts:           # the levels this model really has — no `off`, it is
-            low: low                  # a model that always thinks
-            high: high
-            max: max
-        - id: a-model-that-does-not-reason
-          reasoningEfforts: false     # explicit, never merely absent
-agent-default-model:
-  reasoningEffort: high               # the picker's field for new sessions: written by the GUI,
+- id: llm-pi-ai
+  name: "@deepseek-ai/dsh-llm-pi-ai"
+  config:
+    providers:
+      my-gateway:                     # a custom route: the key is not a catalog provider id
+        baseURL: https://…
+        api: openai-completions
+        # no `reasoning:` here, ever: it is route-wide, and one model without that level
+        # (a non-reasoning model included) would fail every request with
+        # UNSUPPORTED_REASONING_EFFORT. The picker's "默认" row is the intended state.
+        models:
+          - id: glm-5.3
+            reasoningEfforts:         # the levels this model really has — no `off`, it is
+              low: low                # a model that always thinks
+              high: high
+              max: max
+          - id: a-model-that-does-not-reason
+            reasoningEfforts: false   # explicit, never merely absent
+- id: agent-default-model
+  name: "@deepseek-ai/dsh-agent-default-model"
+  config:
+    reasoningEffort: high             # the picker's field for new sessions: written by the GUI,
                                       # removed by this skill only if the default model cannot take it
 ```
 
-Built-in routes and the `llm-deepseek` namespace are listed read-only and never written.
+Only the `llm-pi-ai` row's `config.providers` and that one `agent-default-model` field are ever
+touched, and every other row comes back byte for byte. Built-in routes (a provider key that *is* a
+catalog id) and the `llm-deepseek` row are listed read-only and never written.
 
 ### Two rules about the defaults, both learned the hard way
 
@@ -321,7 +334,7 @@ node scripts/apply-reasoning-efforts.mjs --decide 'my-gateway/my-model=skip'    
 | `--probe` | allow **one** minimal live request per model, to record acceptance (it costs money) |
 | `--strict` | write only models whose evidence is a live probe |
 | `--fix-routes` | migrate a model whose catalog protocol differs from its route's — requires an explicit `--route`, because a gateway does not always follow its catalog and this can break a working route |
-| `--restore latest\|<file>` | roll the settings document back to a backup |
+| `--restore latest\|<file>` | roll the profile patch back to its backup |
 | `--timestamped-backup` | name each backup with a timestamp instead of overwriting the single one |
 | `--report <path>` / `--json` | persist the markdown report / emit machine-readable output (`verdict`, `nextAction`, `commands`, `coverage`, `contract`) |
 | `--self-test` | drive the writer against both shipped fixtures and assert the contract; the gate to run first |
@@ -336,7 +349,7 @@ environment or the invocation is unusable.
 
 | Variable | Meaning |
 | --- | --- |
-| `DSH_HOME` | DSH home (default `~/.dsh`) — where `settings.yaml` and the native skills root live |
+| `DSH_HOME` | DSH home (default `~/.dsh`) — where `profiles/` (the profile patches) and the native skills root live |
 | `DSH_AGENTS_HOME` | the shared user skills root (default `~/.agents`) |
 | `DSH_ROOT` | the DSH install holding `node_modules`; `--dsh-root` overrides it |
 | `DSH_NO_SUBPROCESS=1` | skip the `where`/`which` fallback in install discovery |
@@ -362,13 +375,13 @@ node scripts/apply-reasoning-efforts.mjs --settings scripts/fixture-pinned-defau
 
 ## Rollback
 
-Exactly one backup file is kept: `settings.yaml.bak-reasoning-efforts`, overwritten on
-every write and always holding the state from *before* the last operation. It is a one-step
-undo, not an archive. `--restore latest` restores it and moves the state it replaced back
-into the same file, so restoring twice toggles between the two states. To undo a single
-model, delete its `reasoningEfforts` (or set `false`) — the levels disappear and the
-previous behaviour returns without disturbing the rest of the route. Pass
-`--timestamped-backup` if you would rather have timestamped copies.
+Exactly one backup file is kept per document: `cordis.patch.yml.bak-reasoning-efforts`, beside the
+patch, overwritten on every write and always holding the state from *before* the last operation. It
+is a one-step undo, not an archive. `--restore latest` restores it and moves the state it replaced
+back into the same file, so restoring twice toggles between the two states. To undo a single model,
+delete its `reasoningEfforts` (or set `false`) — the levels disappear and the previous behaviour
+returns without disturbing the rest of the route. Pass `--timestamped-backup` if you would rather
+have timestamped copies.
 
 ## Known traps
 

@@ -1,31 +1,40 @@
 # Fixture: a route-level default that breaks a model the route also carries.
 #
 # DSH applies a route's `reasoning:` to EVERY model on that route
-# (`options.reasoningEffort ?? profile.reasoning`) and refuses at request time when a model
-# does not offer that level, with UNSUPPORTED_REASONING_EFFORT. `fixture-unknown-model` has no
-# catalog entry and no declaration, so it offers nothing at all — the route default alone makes
-# every request to it fail.
+# (`options.reasoningEffort ?? profile.reasoning`) and refuses at request time when a model does
+# not offer that level, with UNSUPPORTED_REASONING_EFFORT. `fixture-unknown-model` has no catalog
+# entry and no declaration, so it offers nothing at all — the route default alone makes every
+# request to it fail.
 #
 # What makes this fixture the important one: a check order of "does the value already look right?"
 # before "does every model on the route support it?" concludes "nothing to do" and leaves the
-# breakage in place, which is how the value survived in the first place. The writer removes it —
-# it never keeps a route default — and says which models the value was breaking.
-llm-pi-ai:
-  providers:
-    mixed-route:
-      apiKeyEnv: MIXED_KEY
-      baseURL: https://opencode.ai/zen/go/v1
-      api: openai-completions
-      reasoning: high
-      models:
-        - id: glm-5.3
-          name: glm-5.3
-        - id: fixture-unknown-model
-          name: a model no catalog provider attests to
-agent-default-model:
-  provider: mixed-route
-  model: fixture-unknown-model
-  reasoningEffort: high
-llm-deepseek: {}
-locale:
-  preference: zh
+# breakage in place, which is how the value survived in the first place. The writer removes it — it
+# never keeps a route default — and says which models the value was breaking.
+#
+# The `agent-default-model` row is a separate entry in the same patch: its `config.reasoningEffort`
+# is the initial level for new sessions, and it names `fixture-unknown-model`, which cannot take
+# `high` either.
+- id: llm-pi-ai
+  name: "@deepseek-ai/dsh-llm-pi-ai"
+  config:
+    providers:
+      mixed-route:
+        apiKeyEnv: MIXED_KEY
+        baseURL: https://opencode.ai/zen/go/v1
+        api: openai-completions
+        reasoning: high
+        models:
+          - id: glm-5.3
+            name: glm-5.3
+          - id: fixture-unknown-model
+            name: a model no catalog provider attests to
+- id: agent-default-model
+  name: "@deepseek-ai/dsh-agent-default-model"
+  config:
+    provider: mixed-route
+    model: fixture-unknown-model
+    reasoningEffort: high
+- id: locale
+  name: "@deepseek-ai/dsh-client-locale"
+  config:
+    preference: zh

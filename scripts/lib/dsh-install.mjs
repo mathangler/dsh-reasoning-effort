@@ -22,8 +22,74 @@ export function dshHome() {
     : join(homedir(), '.dsh')
 }
 
-export function defaultSettingsPath() {
-  return join(dshHome(), 'settings.yaml')
+/**
+ * Every profile patch document — `$DSH_HOME/profiles/<profile>/cordis.patch.yml` — sorted by
+ * path so a run is reproducible.
+ *
+ * DSH 0.1.7 keeps settings here, as a top-level sequence of loader entries. Each profile has
+ * its own file, and only the ones carrying an `llm-pi-ai` row are interesting; the entry check
+ * is a cheap text scan, so the caller can reject a file before parsing anything.
+ */
+export function profilePatches() {
+  const dir = join(dshHome(), 'profiles')
+  if (!existsSync(dir)) return []
+  let names
+  try {
+    names = readdirSync(dir, { withFileTypes: true })
+      .filter((e) => e.isDirectory())
+      .map((e) => e.name)
+      .sort()
+  } catch {
+    return []
+  }
+  return names.map((profile) => ({ profile, path: join(dir, profile, 'cordis.patch.yml') }))
+}
+
+/** Whether a profile patch file configures the `llm-pi-ai` row (text scan, no parse). */
+export function declaresPiAi(path) {
+  try {
+    return /^[ \t]*-[ \t]+id:[ \t]*["']?llm-pi-ai["']?[ \t]*$/m.test(readFileSync(path, 'utf8'))
+  } catch {
+    return false
+  }
+}
+
+/**
+ * The one profile patch a run should act on.
+ *
+ * Either an explicit `--settings <path>`, or the single profile patch that configures
+ * `llm-pi-ai`. More than one is *not* picked for the user: which profile they mean is their call,
+ * and each document gets its own backup, validation and report. Both scripts resolve their target
+ * through here, so they can never disagree about which file is being talked about.
+ */
+export function resolveTarget(explicitPath) {
+  if (explicitPath !== undefined) {
+    const path = resolve(explicitPath)
+    if (!existsSync(path)) return { error: `document not found: ${path}` }
+    if (!declaresPiAi(path)) {
+      return {
+        error: `${path} has no "- id: llm-pi-ai" row, so it configures no providers.`,
+        hint: 'This skill edits a DSH profile patch: $DSH_HOME/profiles/<profile>/cordis.patch.yml',
+      }
+    }
+    return { target: { path, profile: undefined } }
+  }
+  const all = profilePatches()
+  const found = all.filter((p) => existsSync(p.path) && declaresPiAi(p.path))
+  if (found.length === 0) {
+    return {
+      error: `no profile patch under ${join(dshHome(), 'profiles')} configures llm-pi-ai`,
+      candidates: all.map((p) => p.path),
+      hint: 'Add the provider in the DSH GUI first (that creates the row), or pass --settings <path>.',
+    }
+  }
+  if (found.length > 1) {
+    return {
+      error: `${found.length} profile patches configure llm-pi-ai; name the one to use with --settings`,
+      candidates: found.map((p) => p.path),
+    }
+  }
+  return { target: found[0] }
 }
 
 /** Global `node_modules` directories implied by the running Node binary. */
@@ -133,6 +199,9 @@ export function loadYaml(fromDirs) {
     ...fromDirs,
     join(dshHome(), 'profiles', 'node_modules'),
     join(process.cwd(), 'node_modules'),
+    // The same roots the install search uses, so a relocated or globally installed DSH resolves
+    // the parser too instead of failing with "js-yaml is unreachable".
+    ...candidateRoots(undefined),
   ].filter((d) => typeof d === 'string' && d.length > 0)
   for (const base of bases) {
     try {
@@ -165,7 +234,7 @@ export function loadCatalog(piAiDist) {
   const providers = new Map()
   const dir = piAiDist === undefined ? undefined : join(piAiDist, 'providers', 'data')
   if (dir === undefined || !existsSync(dir)) return { providers, byBaseUrl: new Map(), available: false }
-  for (const file of readdirSync(dir).filter((f) => f.endsWith('.json') && !f.startsWith('.'))) {
+  for (const file of readdirSync(dir).filter((f) => f.endsWith('.json') && !f.startsWith('.')).sort()) {
     const doc = readJson(join(dir, file))
     if (doc === undefined || typeof doc !== 'object' || doc === null) continue
     const providerId = file.replace(/\.json$/, '')

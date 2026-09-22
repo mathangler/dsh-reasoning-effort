@@ -1,6 +1,6 @@
 /**
  * capability.mjs — turn "what the installed pi-ai catalog declares about this
- * model" into the exact `reasoningEfforts` map this settings document needs.
+ * model" into the exact `reasoningEfforts` map this provider entry needs.
  *
  * The catalog is the primary source of truth because it *is* the file of record
  * DSH ships: a route named after a catalog provider inherits these values with
@@ -173,10 +173,14 @@ export function matchCatalogProvider(catalog, profile, modelIds) {
   if (base !== undefined) {
     const ids = catalog.byBaseUrl.get(base) ?? []
     if (ids.length > 0) {
-      const chosen = ids
+      // Sorted first, so a tie in the hit count is broken by id instead of by whatever order the
+      // catalog directory happened to be read in: two machines — or two runs on one machine — must
+      // choose the same provider, or the level sets derived from it would differ.
+      const chosen = [...ids]
+        .sort((a, b) => (a === b ? 0 : a < b ? -1 : 1))
         .map((id) => ({ id, hits: modelIds.filter((m) => catalog.providers.get(id)?.models.has(m)).length }))
-        .sort((a, b) => b.hits - a.hits)[0]
-      return { providerId: chosen.id, confidence: 'base-url', alternateIds: ids.filter((id) => id !== chosen.id) }
+        .sort((a, b) => b.hits - a.hits || (a.id === b.id ? 0 : a.id < b.id ? -1 : 1))[0]
+      return { providerId: chosen.id, confidence: 'base-url', alternateIds: ids.filter((id) => id !== chosen.id).sort() }
     }
   }
   const candidates = [...catalog.providers.values()].filter((p) => modelIds.length > 0 && modelIds.every((m) => p.models.has(m)))
@@ -235,5 +239,10 @@ export function siblingCandidates(catalog, modelId, excludeProviderId) {
       })
     }
   }
-  return out
+  // Sorted so the candidate list in the report — and therefore the recommended level sets derived
+  // from it — does not depend on catalog iteration order.
+  return out.sort((a, b) =>
+    (a.providerId === b.providerId ? 0 : a.providerId < b.providerId ? -1 : 1) ||
+    (a.id === b.id ? 0 : a.id < b.id ? -1 : 1),
+  )
 }

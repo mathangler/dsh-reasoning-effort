@@ -4,7 +4,7 @@
 让**自定义**（手写声明的）提供方路线上的每个模型，都拿到它**真实拥有**的思考等级 / reasoning effort；
 唯一无法自行确定的问题，它会**问你**，而不是猜。
 
-这里的"自定义"严格按 DSH 的定义：`llm-pi-ai.providers` 下、**路由名不是** pi-ai 目录 provider id 的那些。
+这里的"自定义"严格按 DSH 的定义：profile 补丁里 `llm-pi-ai` 行 `config.providers` 下、**路由名不是** pi-ai 目录 provider id 的那些。
 这样的路线什么都不继承——pi-ai 是**按路由名**查表的、全有或全无——于是其上每个模型都退回 `reasoning: false`，
 选择器里一个档位都没有。本技能从 DSH 自带的 pi-ai 目录推导出每个模型的真实档位，写成按模型的
 `reasoningEfforts` 声明，并且**拒绝写入任何没有依据的东西**。
@@ -56,7 +56,7 @@
 
 ## 安装
 
-本技能是 **DSH 专用**的：它懂的是 DSH 的 `settings.yaml` schema、DSH 的 pi-ai 目录、DSH 的适配器，
+本技能是 **DSH 专用**的：它懂的是 DSH 的 profile 补丁 schema（`llm-pi-ai` 行与它的 `config.providers`）、DSH 的 pi-ai 目录、DSH 的适配器，
 对别的 agent 没有任何用处。所以它属于 **DSH 自己的技能根**——`.dsh` 这一个，
 **不要**放到多 agent 共用的 `.agents/skills`：
 
@@ -180,7 +180,7 @@ Remove-Item -Recurse -Force "$env:USERPROFILE\.dsh\skills\dsh-reasoning-effort"
 项目级安装同理，删除 `<项目>/.dsh/skills/dsh-reasoning-effort` 即可。
 
 **卸载技能不会撤销它做过的改动。** `reasoningEfforts` 声明、以及对路由级 `reasoning:` 的移除都会留在
-`settings.yaml` 里——它们是普通的配置，不是技能在运行时注入的东西。请在删除目录**之前**先跑
+profile 补丁里——它们是普通的配置，不是技能在运行时注入的东西。请在删除目录**之前**先跑
 `--restore latest`（见下方「回滚」），或者手工删掉那些声明。
 
 ### DSH 从哪里读技能
@@ -221,31 +221,40 @@ node scripts/apply-reasoning-efforts.mjs --apply       # 全部工作
 
 ## 配置
 
-### 它会往 `settings.yaml` 写什么
+### 它写进哪个文件、写成什么
+
+目标文档是 **profile 补丁**：`$DSH_HOME/profiles/<profile>/cordis.patch.yml`——DSH 0.1.7 之后设置就放在这里
+（旧的 `settings.yaml` 只在启动时被导入一次然后改名，之后再也不会被读取）。技能自己会找到这份补丁；
+机器上有多个 profile 时用 `--settings <路径>` 指定。
 
 ```yaml
-llm-pi-ai:
-  providers:
-    my-gateway:                       # 自定义路由：路由名不是目录 provider id
-      baseURL: https://…
-      api: openai-completions
-      # 这里永远不写 `reasoning:`：它作用于整条路由，只要有一个模型没有该档
-      # （包括非推理模型），它的每个请求都会以 UNSUPPORTED_REASONING_EFFORT 失败。
-      # 选择器里的"默认"项才是预期状态。
-      models:
-        - id: glm-5.3
-          reasoningEfforts:           # 该模型真实拥有的档位——没有 `off`，因为它永远在思考
-            low: low
-            high: high
-            max: max
-        - id: a-model-that-does-not-reason
-          reasoningEfforts: false     # 显式声明，绝不靠"缺失"表达
-agent-default-model:
-  reasoningEffort: high               # 选择器给"新建会话"用的字段：由 GUI 写；只有默认模型
+- id: llm-pi-ai
+  name: "@deepseek-ai/dsh-llm-pi-ai"
+  config:
+    providers:
+      my-gateway:                     # 自定义路由：路由名不是目录 provider id
+        baseURL: https://…
+        api: openai-completions
+        # 这里永远不写 `reasoning:`：它作用于整条路由，只要有一个模型没有该档
+        # （包括非推理模型），它的每个请求都会以 UNSUPPORTED_REASONING_EFFORT 失败。
+        # 选择器里的"默认"项才是预期状态。
+        models:
+          - id: glm-5.3
+            reasoningEfforts:         # 该模型真实拥有的档位——没有 `off`，因为它永远在思考
+              low: low
+              high: high
+              max: max
+          - id: a-model-that-does-not-reason
+            reasoningEfforts: false   # 显式声明，绝不靠"缺失"表达
+- id: agent-default-model
+  name: "@deepseek-ai/dsh-agent-default-model"
+  config:
+    reasoningEffort: high             # 选择器给"新建会话"用的字段：由 GUI 写；只有默认模型
                                       # 吃不下这个档位时，本技能才会把它移除
 ```
 
-内置路由与 `llm-deepseek` 命名空间只做只读呈现，永不写入。
+只有 `llm-pi-ai` 行的 `config.providers` 和上面那一个 `agent-default-model` 字段会被改动，
+其余每一行都逐字节原样保留。目录内置路由（provider key 就是目录 id）与 `llm-deepseek` 行只做只读呈现，永不写入。
 
 ### 关于默认档的两条规则（都是踩过坑才定下的）
 
@@ -302,7 +311,7 @@ node scripts/apply-reasoning-efforts.mjs --decide 'my-gateway/my-model=skip'    
 
 | 变量 | 含义 |
 | --- | --- |
-| `DSH_HOME` | DSH 主目录（默认 `~/.dsh`）——`settings.yaml` 与原生技能根都在这里 |
+| `DSH_HOME` | DSH 主目录（默认 `~/.dsh`）——`profiles/`（各 profile 补丁）与原生技能根都在这里 |
 | `DSH_AGENTS_HOME` | 共用的用户技能根（默认 `~/.agents`） |
 | `DSH_ROOT` | 含 `node_modules` 的 DSH 安装；`--dsh-root` 优先 |
 | `DSH_NO_SUBPROCESS=1` | 安装发现时跳过 `where`/`which` 兜底 |
@@ -325,8 +334,8 @@ node scripts/apply-reasoning-efforts.mjs --settings scripts/fixture-pinned-defau
 
 ## 回滚
 
-只保留**一个**备份文件：`settings.yaml.bak-reasoning-efforts`，每次写入都覆盖它，内容始终是**上一次操作前**的状态。
-它是"一步撤销"，不是归档。`--restore latest` 会还原它，并把被替换掉的状态写回**同一个文件**——
+只保留**一个**备份文件（每份文档一个）：`cordis.patch.yml.bak-reasoning-efforts`，就放在补丁旁边，每次写入都覆盖它，
+内容始终是**上一次操作前**的状态。它是"一步撤销"，不是归档。`--restore latest` 会还原它，并把被替换掉的状态写回**同一个文件**——
 所以连续 restore 两次就是在这两个状态之间来回切换。只想撤销单个模型，删掉它的 `reasoningEfforts`
 （或设成 `false`）即可——档位消失、行为还原，不影响该路由上的其他模型。
 想要带时间戳的多份备份，加 `--timestamped-backup`。

@@ -30,8 +30,8 @@ import { dirname } from 'node:path'
 import { fileURLToPath } from 'node:url'
 
 import { THINKING_LEVELS, deriveFromCatalog, findOverride, loadOverrides, matchCatalogProvider, supportedLevels } from './lib/capability.mjs'
-import { defaultSettingsPath, dshVersion, findInstall, loadCatalog, loadCompatGates, loadYaml } from './lib/dsh-install.mjs'
-import { listRoutes, splitText } from './lib/yaml-edit.mjs'
+import { dshVersion, findInstall, loadCatalog, loadCompatGates, loadYaml, resolveTarget } from './lib/dsh-install.mjs'
+import { entryConfigOf, listRoutes, providersOf, splitText } from './lib/yaml-edit.mjs'
 
 const SKILL_DIR = fileURLToPath(new URL('..', import.meta.url))
 const CONTRACT = 1
@@ -74,8 +74,8 @@ const has = (name) => argv.includes(name)
 if (has('--help') || has('-h')) {
   console.log(`usage: node check-reasoning-route.mjs [--route <name>] [--settings <path>] [--dsh-root <path>] [--json]
 
-  --route     only report this route (default: every route under llm-pi-ai.providers)
-  --settings  settings document to read (default: $DSH_HOME/settings.yaml)
+  --route     only report this route (default: every route in the llm-pi-ai row's providers)
+  --settings  the profile patch to read (default: the single profile patch that configures llm-pi-ai)
   --dsh-root  dsh install root holding node_modules (default: discovered)
   --json      machine-readable output
 
@@ -83,15 +83,18 @@ Env: DSH_ROOT supplies the dsh root; DSH_NO_SUBPROCESS=1 skips the where/which f
   process.exit(0)
 }
 
-const settingsPath = flagValue('--settings', defaultSettingsPath())
-const wantRoute = flagValue('--route', undefined)
-if (!existsSync(settingsPath)) {
-  console.error(`settings document not found: ${settingsPath}`)
+const resolved = resolveTarget(flagValue('--settings', undefined))
+if (resolved.error !== undefined) {
+  console.error(resolved.error)
+  for (const path of resolved.candidates ?? []) console.error(`  ${path}`)
+  if (resolved.hint !== undefined) console.error(resolved.hint)
   process.exit(2)
 }
+const settingsPath = resolved.target.path
+const wantRoute = flagValue('--route', undefined)
 
 const install = findInstall(flagValue('--dsh-root', undefined))
-const yaml = loadYaml([dirname(settingsPath), SKILL_DIR])
+const yaml = loadYaml([dirname(settingsPath), SKILL_DIR, install.root])
 if (yaml === undefined) {
   console.error('could not load js-yaml (it ships with DSH; point --settings at a directory that can reach it)')
   process.exit(2)
@@ -107,7 +110,7 @@ let doc
 try {
   doc = yaml.load(text)
 } catch (error) {
-  console.error(`settings document does not parse: ${error.message}`)
+  console.error(`the profile patch does not parse: ${error.message}`)
   process.exit(2)
 }
 
@@ -131,7 +134,7 @@ if (!gates.available) {
 }
 
 for (const route of routes) {
-  const profile = doc?.['llm-pi-ai']?.providers?.[route.id] ?? {}
+  const profile = providersOf(doc)?.[route.id] ?? {}
   const isCatalogRoute = catalogProviderIds.has(route.id)
   const match = isCatalogRoute ? { providerId: route.id, confidence: 'base-url' } : matchCatalogProvider(catalog, { baseURL: route.baseURL }, route.modelIds)
   const catalogProvider = match === undefined ? undefined : catalog.providers.get(match.providerId)
@@ -221,7 +224,7 @@ for (const route of routes) {
       continue
     }
     if (offeredOn === undefined) {
-      entry.compat.push({ field, verdict: withheldOn === undefined ? 'not a known compat field' : 'withheld: catalog-only, DSH refuses it from settings.yaml' })
+      entry.compat.push({ field, verdict: withheldOn === undefined ? 'not a known compat field' : 'withheld: catalog-only, DSH refuses it from a profile patch' })
       report.problems.push(`route "${route.id}": compat "${field}" is ${withheldOn === undefined ? 'not a known compat field' : 'catalog-only (withheld)'}`)
       continue
     }
@@ -247,7 +250,7 @@ for (const route of routes) {
   report.routes.push(entry)
 }
 
-const deepseekSection = doc?.['llm-deepseek']
+const deepseekSection = entryConfigOf(doc, 'llm-deepseek')
 const deepseekNote = deepseekSection === undefined
   ? undefined
   : { section: 'llm-deepseek', provider: 'deepseek-official', levels: ['off', 'low', 'high', 'max'], note: 'built-in adapter; fixed four levels, never per-model' }
@@ -255,12 +258,12 @@ const deepseekNote = deepseekSection === undefined
 if (has('--json')) {
   console.log(JSON.stringify({ ...report, deepseek: deepseekNote }, null, 2))
 } else {
-  console.log(`settings    : ${settingsPath}`)
+  console.log(`profile patch: ${settingsPath}`)
   console.log(`contract    : ${CONTRACT} (SKILL.md states the contract it expects)`)
   console.log(`dsh install : ${install.label}${dshVersion(install) === undefined ? '' : ` (dsh ${dshVersion(install)})`}`)
   console.log(`pi-ai       : ${catalog.providers.size} catalog providers`)
   console.log(`compat gates: ${gates.available ? `parsed (${gates.gatesFound} gate literals)` : `UNAVAILABLE — ${gates.reason}`}`)
-  if (routes.length === 0) console.log('\nno routes configured under llm-pi-ai.providers')
+  if (routes.length === 0) console.log('\nno providers configured in the llm-pi-ai row')
 
   for (const r of report.routes) {
     console.log(`\n${'='.repeat(72)}\nroute: ${r.route}`)

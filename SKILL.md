@@ -1,16 +1,23 @@
 ---
 name: dsh-reasoning-effort
-description: Give every model on a custom (hand-declared) DSH provider route the thinking / reasoning-effort levels it actually has — a `reasoningEfforts` map for models that reason, an explicit `false` for those that do not, and no route-level default, so each model keeps the gateway's own default ("默认"). Built-in providers are never touched; a model nothing can source is researched and then put to the user as a question instead of being guessed at. Use when a model menu shows no 推理等级 / effort submenu, when a level returns UNSUPPORTED_REASONING_EFFORT, when models were added under `llm-pi-ai.providers` in settings.yaml, or when the user asks 怎么调思考等级 / 调整思考强度 / 加推理等级 / reasoning effort / thinking budget.
+description: Give every model on a custom (hand-declared) DSH provider route the thinking / reasoning-effort levels it actually has — a `reasoningEfforts` map for models that reason, an explicit `false` for those that do not, and no route-level default, so each model keeps the gateway's own default ("默认"). Built-in providers are never touched; a model nothing can source is researched and then put to the user as a question instead of being guessed at. Use when a model menu shows no 推理等级 / effort submenu, when a level returns UNSUPPORTED_REASONING_EFFORT, when a provider or model was added in the DSH GUI, or when the user asks 怎么调思考等级 / 调整思考强度 / 加推理等级 / reasoning effort / thinking budget.
 disable-model-invocation: true
 ---
 
 # dsh-reasoning-effort
 
-Every model on a hand-declared `llm-pi-ai.providers` route gets an explicit reasoning-effort
-declaration, so the picker offers the levels the model really has. No route-level default is
-ever written: each model keeps the gateway's own default ("默认"), which is the one value every
-model can accept. Built-in providers are never written. A model nothing can source is researched,
-then asked about — never guessed.
+Every model on a hand-declared provider route gets an explicit reasoning-effort declaration, so
+the picker offers the levels the model really has. No route-level default is ever written: each
+model keeps the gateway's own default ("默认"), which is the one value every model can accept.
+Built-in providers are never written. A model nothing can source is researched, then asked
+about — never guessed.
+
+**The document is a DSH profile patch**: `$DSH_HOME/profiles/<profile>/cordis.patch.yml`, a
+top-level sequence of loader entries where the `llm-pi-ai` row carries `config.providers.<route>`.
+The tools find it themselves (an explicit `--settings <path>` overrides that), so no path has to be
+guessed. `settings.yaml` is *not* used: DSH 0.1.7 imports it once at boot and renames it, so writing
+it would change nothing. If more than one profile patch configures `llm-pi-ai`, the run stops with
+`exit 2` and lists them instead of picking one.
 
 **Contract version 1.** If a script prints a different `contract` number, stop and tell the
 user to reinstall: the files on disk do not match this document.
@@ -66,8 +73,8 @@ declared `false` has no effort pane at all.
 
 ## Never
 
-- Never edit `settings.yaml` yourself. The writer edits it with a backup and a path-scoped
-  validation; a hand edit bypasses both.
+- Never edit the profile patch yourself. The writer edits it with a backup, a path-scoped
+  validation and a read-back; a hand edit bypasses all three.
 - Never invent a level set, and never invent a source URL. `unknown` means ask.
 - Never write to a route whose name is a pi-ai catalog id, or to `llm-deepseek`. Those are
   built-ins — the tool refuses anyway, so do not spend a turn trying.
@@ -102,6 +109,7 @@ declared `false` has no effort pane at all.
 
 ## When the user asks "why"
 
-Read `REFERENCE.md` in this skill and answer from it: the catalog-by-route-name rule, the seven
-levels and what a declaration pins, the protocol differences and the session-header trap, why a
-route default is route-scoped, the evidence tiers, and the write-path guarantees.
+Read `REFERENCE.md` in this skill and answer from it: where the settings live now, the
+catalog-by-route-name rule, the seven levels and what a declaration pins, the protocol differences
+and the session-header trap, why a route default is route-scoped, the evidence tiers, and the
+write-path guarantees.

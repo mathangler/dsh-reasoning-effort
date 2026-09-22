@@ -1,25 +1,33 @@
 /**
- * yaml-edit.mjs — a line-level editor for `settings.yaml`.
+ * yaml-edit.mjs — a line-level editor for a DSH profile patch
+ * (`$DSH_HOME/profiles/<profile>/cordis.patch.yml`).
  *
- * Surgical on purpose. `settings.yaml` is a hand-maintained document: DSH's own
- * writer patches individual nodes so that comments, anchors and formatting
- * survive, and a full parse-and-dump round trip does not (a real example of the
- * damage is the flow-styled, misindented `settings.yaml.bak-efforts` left behind
- * by a naive writer). Everything here therefore works on the original text and
- * only ever inserts, replaces or removes whole line ranges that it located by
- * indentation — untouched lines are written back byte for byte.
+ * Surgical on purpose. The patch is a hand-maintained document: DSH's own writer patches
+ * individual nodes so that comments, anchors and formatting survive, and a full parse-and-dump
+ * round trip does not (a real example of the damage is the flow-styled, misindented
+ * `settings.yaml.bak-efforts` left behind by a naive writer). Everything here therefore works on
+ * the original text and only ever inserts, replaces or removes whole line ranges that it located
+ * by indentation — untouched lines are written back byte for byte.
+ *
+ * Shape: a top-level sequence of loader entries, `- id: <entry>` / `name:` / `config:`. The
+ * provider configuration lives in the `llm-pi-ai` row at `config.providers.<route>`.
  */
 import { THINKING_LEVELS } from './capability.mjs'
 
 export function splitText(text) {
-  const eol = text.includes('\r\n') ? '\r\n' : '\n'
-  const finalNewline = text.endsWith('\n')
-  const body = finalNewline ? text.slice(0, -1) : text
-  return { lines: body.split(/\r?\n/), eol, finalNewline }
+  // A byte-order mark is not part of the first key, and `\s` in the key regex would count it as
+  // indentation — one line deeper than every other line, which silently hides the whole document.
+  // It is carried separately and written back, so the file keeps whatever encoding it had.
+  const bom = text.charCodeAt(0) === 0xfeff
+  const content = bom ? text.slice(1) : text
+  const eol = content.includes('\r\n') ? '\r\n' : '\n'
+  const finalNewline = content.endsWith('\n')
+  const body = finalNewline ? content.slice(0, -1) : content
+  return { lines: body.split(/\r?\n/), eol, finalNewline, bom }
 }
 
-export function joinText({ lines, eol, finalNewline }) {
-  return lines.join(eol) + (finalNewline ? eol : '')
+export function joinText({ lines, eol, finalNewline, bom }) {
+  return (bom === true ? '\ufeff' : '') + lines.join(eol) + (finalNewline ? eol : '')
 }
 
 const KEY_LINE = /^(\s*)(?:-\s+)?("[^"]+"|'[^']+'|[A-Za-z0-9_.\-$]+)\s*:(.*)$/
@@ -103,13 +111,59 @@ export function childByKey(lines, start, end, key) {
 }
 
 /**
- * `{ keyLine, start, end, models, routeIndent }` for a route under
- * `llm-pi-ai.providers`, or `undefined` when the document does not have it.
+ * The `llm-pi-ai` row of a DSH *profile patch* document.
+ *
+ * DSH 0.1.7 keeps settings in `$DSH_HOME/profiles/<profile>/cordis.patch.yml`, a top-level
+ * **sequence** of loader entries (`- id: <entry>` / `name:` / `config:`). That file replaced
+ * `settings.yaml`, which 0.1.7 imports once and then renames, so the provider configuration now
+ * sits at `[<the llm-pi-ai row>].config.providers.<route>` — one level deeper than the old
+ * top-level `llm-pi-ai.providers.<route>`. Every locator below goes through here, so the rest of
+ * the editor never has to know which shape it is looking at.
+ */
+export function locatePatchEntry(lines, entryId) {
+  const entries = children(lines, 0, lines.length)
+  for (let index = 0; index < entries.length; index++) {
+    const entry = entries[index]
+    const onItem = analyzeLine(lines[entry.start])
+    if (onItem.key !== 'id' || onItem.value.replace(/["']/g, '') !== entryId) continue
+    // `keyLine + 1`, not `keyLine`: `children()` measures indentation from the lines *inside* a
+    // block, and the item line itself (`- id: …`) sits one level out.
+    return { index, entry, id: entryId, config: childByKey(lines, entry.start + 1, entry.end, 'config') }
+  }
+  return undefined
+}
+
+/** The `providers` mapping inside the `llm-pi-ai` row (`undefined` when the row has no config). */
+export function locateProvidersBlock(lines, entryId = 'llm-pi-ai') {
+  const found = locatePatchEntry(lines, entryId)
+  if (found === undefined) return undefined
+  if (found.config === undefined) return { ...found, providers: undefined }
+  return { ...found, providers: childByKey(lines, found.config.start + 1, found.config.end, 'providers') }
+}
+
+/** The `providers` map of an already-parsed profile patch document (same lookup, on data). */
+export function providersOf(doc, entryId = 'llm-pi-ai') {
+  for (const row of Array.isArray(doc) ? doc : []) {
+    if (row !== null && typeof row === 'object' && row.id === entryId) return row?.config?.providers
+  }
+  return undefined
+}
+
+/** The `config` object of an already-parsed patch entry, e.g. `agent-default-model`. */
+export function entryConfigOf(doc, entryId) {
+  for (const row of Array.isArray(doc) ? doc : []) {
+    if (row !== null && typeof row === 'object' && row.id === entryId) return row?.config
+  }
+  return undefined
+}
+
+/**
+ * `{ keyLine, start, end, models, routeIndent }` for a route under the `llm-pi-ai` row's
+ * `config.providers`, or `undefined` when the document does not have it.
  */
 export function locateRoute(lines, routeId) {
-  const top = childByKey(lines, 0, lines.length, 'llm-pi-ai')
-  if (top === undefined) return undefined
-  const providers = childByKey(lines, top.keyLine + 1, top.end, 'providers')
+  const block = locateProvidersBlock(lines)
+  const providers = block?.providers
   if (providers === undefined) return undefined
   const indent = childIndentOf(lines, providers.keyLine + 1, providers.end)
   if (indent === undefined) return undefined
@@ -187,7 +241,7 @@ export function upsertReasoningEfforts(text, routeId, modelId, efforts) {
   const parts = splitText(text)
   const { lines } = parts
   const route = locateRoute(lines, routeId)
-  if (route === undefined) return { changed: false, reason: `route "${routeId}" not found as a direct child of llm-pi-ai.providers` }
+  if (route === undefined) return { changed: false, reason: `route "${routeId}" not found in the llm-pi-ai row's providers` }
   if (route.models === undefined) return { changed: false, reason: `route "${routeId}" has no "models" list` }
   const item = locateModelItem(lines, route, modelId)
   if (item === undefined) return { changed: false, reason: `model "${modelId}" not found on route "${routeId}"` }
@@ -265,17 +319,18 @@ export function appendModelItem(text, routeId, blockLines) {
 }
 
 /**
- * Create a route under `llm-pi-ai.providers`, copying the credential and
+ * Create a route under the `llm-pi-ai` row's `config.providers`, copying the credential and
  * display name from an existing route so the new one authenticates identically.
  */
 export function createRoute(text, routeId, { api, baseURL, apiKeyEnv, displayName, modelBlock }) {
   const parts = splitText(text)
   const { lines } = parts
-  const top = childByKey(lines, 0, lines.length, 'llm-pi-ai')
-  const providers = top === undefined ? undefined : childByKey(lines, top.keyLine + 1, top.end, 'providers')
-  if (providers === undefined) return { changed: false, reason: 'llm-pi-ai.providers not found' }
+  const located = locateProvidersBlock(lines)
+  if (located === undefined) return { changed: false, reason: 'no patch entry with id "llm-pi-ai"' }
+  const providers = located.providers
+  if (providers === undefined) return { changed: false, reason: 'the "llm-pi-ai" entry has no config.providers' }
   const indent = childIndentOf(lines, providers.keyLine + 1, providers.end)
-  if (indent === undefined) return { changed: false, reason: 'llm-pi-ai.providers is empty' }
+  if (providers === undefined) return { changed: false, reason: 'the "llm-pi-ai" row has an empty config.providers' }
   if (locateRoute(lines, routeId) !== undefined) return { changed: false, reason: `route "${routeId}" already exists` }
 
   const pad = ' '.repeat(indent)
@@ -294,68 +349,7 @@ export function createRoute(text, routeId, { api, baseURL, apiKeyEnv, displayNam
   return { changed: true, text: joinText(parts), indent }
 }
 
-/**
- * Set a scalar field belonging to a route block, e.g. `reasoning: high`.
- *
- * `reasoning` is the only field of this kind today, and it is the one the writer
- * refuses to create (it is route-wide and breaks every model that lacks the level),
- * so nothing calls this any more. It stays for the case where a person has decided
- * they want a pinned route default: `upsertRouteScalar(text, route, 'reasoning',
- * 'high')`. `removeRouteScalar` is the direction the skill actually uses.
- * Inserted before `models:` so the route still reads top-down.
- */
-export function upsertRouteScalar(text, routeId, key, value) {
-  const parts = splitText(text)
-  const { lines } = parts
-  const route = locateRoute(lines, routeId)
-  if (route === undefined) return { changed: false, reason: `route "${routeId}" not found` }
-  // The route's own key sits at `routeIndent`; its fields are one level deeper.
-  const fieldIndent = childIndentOf(lines, route.keyLine + 1, route.end) ?? route.routeIndent + 2
-  return upsertChildScalar(parts, route.keyLine, route.end, fieldIndent, key, value, 'models')
-}
-
-/** Set a scalar field inside a top-level namespace block, e.g. `agent-default-model`. */
-export function upsertNamespaceScalar(text, namespace, key, value) {
-  const parts = splitText(text)
-  const { lines } = parts
-  const ns = childByKey(lines, 0, lines.length, namespace)
-  if (ns === undefined) return { changed: false, reason: `namespace "${namespace}" not found` }
-  const indent = childIndentOf(lines, ns.keyLine + 1, ns.end)
-  if (indent === undefined) return { changed: false, reason: `namespace "${namespace}" has no fields to sit beside` }
-  return upsertChildScalar(parts, ns.keyLine, ns.end, indent, key, value)
-}
-
-function upsertChildScalar(parts, blockStart, blockStop, indent, key, value, beforeKey) {
-  const { lines } = parts
-  const wanted = `${key}: ${value}`
-  for (let i = blockStart + 1; i < blockStop; i++) {
-    const info = analyzeLine(lines[i])
-    if (info.itemIndent !== undefined || info.indent !== indent || info.key !== key) continue
-    if (lines[i].trim() === wanted) return { changed: false, reason: 'already correct', unchanged: true }
-    lines[i] = `${' '.repeat(indent)}${wanted}`
-    return { changed: true, text: joinText(parts), action: 'replaced' }
-  }
-  let at
-  if (beforeKey !== undefined) {
-    const anchor = childByKey(lines, blockStart + 1, blockStop, beforeKey)
-    at = anchor === undefined ? undefined : anchor.start
-  }
-  if (at === undefined) {
-    at = blockStop
-    while (at > blockStart + 1 && isBlank(lines[at - 1])) at--
-  }
-  lines.splice(at, 0, `${' '.repeat(indent)}${wanted}`)
-  return { changed: true, text: joinText(parts), action: 'inserted' }
-}
-
-/**
- * Remove a scalar field from a route block.
- *
- * Needed for the one destructive repair in this skill: a route-level `reasoning:` value is
- * applied to *every* model on the route, so once a model that does not offer it is added,
- * that field makes the model unusable and has to come out — the writer re-adds it as soon as
- * every model on the route supports it again.
- */
+/** Remove a scalar field from a route block. */
 export function removeRouteScalar(text, routeId, key) {
   const parts = splitText(text)
   const { lines } = parts
@@ -365,15 +359,26 @@ export function removeRouteScalar(text, routeId, key) {
   return removeChildScalar(parts, route.keyLine, route.end, fieldIndent, key)
 }
 
-/** Remove a scalar field from a top-level namespace block. */
-export function removeNamespaceScalar(text, namespace, key) {
+/**
+ * Remove a scalar field from a patch entry's `config` block, e.g.
+ * `- id: agent-default-model` → `config.reasoningEffort`.
+ *
+ * Needed for the one destructive repair outside a route: a global default the configured
+ * default model cannot accept makes the first request of every new session fail.
+ */
+export function removePatchConfigScalar(text, entryId, key) {
   const parts = splitText(text)
   const { lines } = parts
-  const ns = childByKey(lines, 0, lines.length, namespace)
-  if (ns === undefined) return { changed: false, reason: `namespace "${namespace}" not found` }
-  const indent = childIndentOf(lines, ns.keyLine + 1, ns.end)
-  if (indent === undefined) return { changed: false, reason: `namespace "${namespace}" has no fields to remove` }
-  return removeChildScalar(parts, ns.keyLine, ns.end, indent, key)
+  const found = locatePatchEntry(lines, entryId)
+  if (found === undefined) return { changed: false, reason: `no patch entry with id "${entryId}"` }
+  if (found.config === undefined) return { changed: false, reason: `patch entry "${entryId}" has no config block` }
+  const indent = childIndentOf(lines, found.config.keyLine + 1, found.config.end)
+  if (indent === undefined) {
+    // A flow-style `config: { … }` on one line has no lines to edit. Refusing loudly beats
+    // guessing: the caller reports it instead of leaving a value that still breaks requests.
+    return { changed: false, reason: `patch entry "${entryId}" has a single-line config; cannot remove ${key} in place` }
+  }
+  return removeChildScalar(parts, found.config.keyLine, found.config.end, indent, key)
 }
 
 function removeChildScalar(parts, blockStart, blockStop, indent, key) {
@@ -407,11 +412,9 @@ export function reindent(blockLines, indent) {
   })
 }
 
-/** Every route under `llm-pi-ai.providers`, as `{ id, api, baseURL, modelIds }`. */
+/** Every route under the `llm-pi-ai` row's `config.providers`, as `{ id, api, baseURL, modelIds }`. */
 export function listRoutes(lines) {
-  const top = childByKey(lines, 0, lines.length, 'llm-pi-ai')
-  if (top === undefined) return []
-  const providers = childByKey(lines, top.keyLine + 1, top.end, 'providers')
+  const providers = locateProvidersBlock(lines)?.providers
   if (providers === undefined) return []
   const indent = childIndentOf(lines, providers.keyLine + 1, providers.end)
   if (indent === undefined) return []

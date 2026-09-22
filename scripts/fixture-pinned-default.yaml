@@ -10,26 +10,31 @@
 # request. Keeping the default out of the document is what makes the picker show "默认" and lets
 # each model fall back to its gateway's own default, which every model accepts.
 #
-# The global `agent-default-model.reasoningEffort` is the opposite case and must survive: it is the
-# picker's own field holding the user's choice, and the model it names (`glm-5.3`) really offers
-# `high`. `fixture-breaking-default.yaml` covers the removal, for a default model that does not.
-llm-pi-ai:
-  providers:
-    pinned-route:
-      displayName: Pinned Route
-      apiKeyEnv: PINNED_KEY
-      baseURL: https://opencode.ai/zen/go/v1
-      api: openai-completions
-      reasoning: high
-      models:
-        - id: glm-5.3
-          name: glm-5.3
-        - id: glm-5.3-flash
-          name: glm-5.3-flash
-agent-default-model:
-  provider: pinned-route
-  model: glm-5.3
-  reasoningEffort: high
-llm-deepseek: {}
-locale:
-  preference: zh
+# The `agent-default-model` row is the opposite case and must survive: it is the picker's own field
+# holding the user's choice, and the model it names (`glm-5.3`) really offers `high`.
+# `fixture-breaking-default.yaml` covers the removal, for a default model that does not.
+- id: llm-pi-ai
+  name: "@deepseek-ai/dsh-llm-pi-ai"
+  config:
+    providers:
+      pinned-route:
+        displayName: Pinned Route
+        apiKeyEnv: PINNED_KEY
+        baseURL: https://opencode.ai/zen/go/v1
+        api: openai-completions
+        reasoning: high
+        models:
+          - id: glm-5.3
+            name: glm-5.3
+          - id: glm-5.3-flash
+            name: glm-5.3-flash
+- id: agent-default-model
+  name: "@deepseek-ai/dsh-agent-default-model"
+  config:
+    provider: pinned-route
+    model: glm-5.3
+    reasoningEffort: high
+- id: locale
+  name: "@deepseek-ai/dsh-client-locale"
+  config:
+    preference: zh
