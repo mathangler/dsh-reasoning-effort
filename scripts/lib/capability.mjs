@@ -184,11 +184,27 @@ export function matchCatalogProvider(catalog, profile, modelIds) {
   return undefined
 }
 
-/** Vendor prefixes seen in catalog ids: `minimax/minimax-m2.5`, `minimax.minimax-m2.5`, `MiniMaxAI/MiniMax-M2.5`. */
+/**
+ * Variants of a catalog id that count as "the same model".
+ *
+ * Only a *vendor prefix* is stripped, and only when that prefix carries no digits: catalog ids
+ * arrive as `minimax/minimax-m2.5`, `minimax.minimax-m2.5` and `MiniMaxAI/MiniMax-M2.5`, where
+ * the segment before the separator is a vendor name. Splitting unconditionally would also turn
+ * `mimo-v2.6-flash` into `flash`, which would then "match" `glm-5.3-flash` — two unrelated
+ * models.
+ */
 function idVariants(id) {
   const raw = String(id)
-  const parts = [raw, raw.split('/').pop(), raw.split('.').pop()]
-  return new Set(parts.filter((p) => typeof p === 'string' && p.length >= 3).map((p) => p.toLowerCase()))
+  const out = new Set([raw.toLowerCase()])
+  for (const separator of ['/', '.']) {
+    const at = raw.lastIndexOf(separator)
+    if (at <= 0) continue
+    const prefix = raw.slice(0, at)
+    const rest = raw.slice(at + 1)
+    if (/\d/.test(prefix) || rest.length < 3) continue
+    out.add(rest.toLowerCase())
+  }
+  return out
 }
 
 /**

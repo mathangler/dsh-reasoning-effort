@@ -54,6 +54,22 @@ SKILL.md, then run the validator". That left three gaps:
 - The license and its copyright.
 - `scripts/live-probe.md`, untouched.
 
+## The file set today
+
+| Path | Role |
+| --- | --- |
+| `SKILL.md` | the execution path only: five steps, the Never list, the exit codes |
+| `REFERENCE.md` | the DSH internals the scripts encode, read when someone asks "why" |
+| `README.md` / `README.zh.md` | install, update, uninstall, configuration, verification (human-facing) |
+| `data/reasoning-overrides.yaml` | cited provider facts, evidence `vendor` |
+| `data/user-decisions.yaml` | answers recorded with `--decide`, evidence `user` |
+| `scripts/apply-reasoning-efforts.mjs` | the writer, plus `--self-test`, `--decide`, `--json` |
+| `scripts/check-reasoning-route.mjs` | the read-only validator |
+| `scripts/lib/` | install discovery, catalog and level rules, the line-level YAML editor |
+| `scripts/fixture*.yaml` | three fixtures the self-test drives: declare/ask/non-reasoning, the built-in boundary, and a breaking route default |
+| `scripts/install-from-github.mjs`, `scripts/publish-via-api.mjs` | the API fallbacks for environments where git cannot reach github.com |
+| `scripts/live-probe.md` | upstream, untouched |
+
 ## Keeping the prose in sync
 
 The DSH-internals prose in `SKILL.md` and `scripts/live-probe.md` are the parts most

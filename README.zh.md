@@ -238,10 +238,24 @@ llm-pi-ai:
         - id: a-model-that-does-not-reason
           reasoningEfforts: false     # 显式声明，绝不靠"缺失"表达
 agent-default-model:
-  reasoningEffort: high               # 新建会话的初始档位
+  reasoningEffort: high               # 由你手写或 GUI 写入，本技能从不写它
 ```
 
 内置路由与 `llm-deepseek` 命名空间只做只读呈现，永不写入。
+
+### 关于默认档的两条规则（都是踩过坑才定下的）
+
+- **路由级默认会被套用到该路由的每一个模型**，而 DSH 对不支持该档的模型直接抛
+  `UNSUPPORTED_REASONING_EFFORT`——**包括完全没有档位声明的模型**。所以只要有一个模型接受不了，
+  写入器就会**移除**该路由默认，并在全路由都支持时自动重新写上。这是本技能**唯一**的破坏性改动，
+  报告里一定会点名是哪个模型导致的。
+- **从不主动写入 `agent-default-model.reasoningEffort`。** 它是全局值、作用于"新建会话恰好落在哪个模型"，
+  无法用一个模型证明它对所有模型安全；而且它本来就短命——选择器一改就会重写它，选到任何没有
+  `defaultEffort` 的模型还会把它清掉。写入器只在能**证明**默认模型不支持该档时才移除它。
+
+因此当一条路由上的模型档位不一致时，该路由最终不会有默认档，其模型会重新出现 `Default` 项。
+这一点会在报告的 `默认档位` 段落与 `routeDefaultsUnmet` 里说明；想把"没有 Default"这个性质拿回来，
+得把不兼容的模型单独放到另一条路由上。
 
 ### 两个数据层
 

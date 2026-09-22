@@ -266,10 +266,27 @@ llm-pi-ai:
         - id: a-model-that-does-not-reason
           reasoningEfforts: false     # explicit, never merely absent
 agent-default-model:
-  reasoningEffort: high               # the initial selection for new sessions
+  reasoningEffort: high               # written by hand or by the GUI, never by this skill
 ```
 
 Built-in routes and the `llm-deepseek` namespace are listed read-only and never written.
+
+### Two rules about the defaults, both learned the hard way
+
+- **A route default is applied to every model on the route**, and DSH throws
+  `UNSUPPORTED_REASONING_EFFORT` for a model that does not offer it — including a model that declares
+  no levels at all. So the writer **removes** a route default as soon as one model on the route cannot
+  accept it, and re-adds it once every model can again. That removal is the only destructive change
+  this skill ever makes, and the report always names the model that caused it.
+- **`agent-default-model.reasoningEffort` is never written.** It is a global value applied to whatever
+  model a new session happens to start on, so it cannot be verified against one model and trusted — and
+  it is short-lived anyway, because the picker rewrites it and selecting a model with no `defaultEffort`
+  clears it. The writer only removes it, and only when it can prove the configured default model does
+  not offer the value.
+
+A route whose models disagree about levels therefore ends up with no default, and its models show a
+`Default` row again. That is reported in the `默认档位` section and in `routeDefaultsUnmet`; the way to
+get the no-Default behaviour back is to give the incompatible models their own route.
 
 ### The two data layers
 

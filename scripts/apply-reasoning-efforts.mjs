@@ -22,7 +22,21 @@ import { tmpdir } from 'node:os'
 import { spawnSync } from 'node:child_process'
 import { fileURLToPath } from 'node:url'
 
-import { analyzeLine, children, joinText, listRoutes, locateRoute, moveModelItem, createRoute, splitText, upsertNamespaceScalar, upsertReasoningEfforts, upsertRouteScalar } from './lib/yaml-edit.mjs'
+import {
+  analyzeLine,
+  children,
+  createRoute,
+  joinText,
+  listRoutes,
+  locateRoute,
+  moveModelItem,
+  removeNamespaceScalar,
+  removeRouteScalar,
+  splitText,
+  upsertNamespaceScalar,
+  upsertReasoningEfforts,
+  upsertRouteScalar,
+} from './lib/yaml-edit.mjs'
 import {
   THINKING_LEVELS,
   deriveFromCatalog,
@@ -170,8 +184,20 @@ if (has('--self-test')) {
   check('B: a catalog route carrying an unknown model is untouched', same(b.after?.['llm-pi-ai']?.providers?.['opencode-go'], b.before['llm-pi-ai'].providers['opencode-go']))
   check('B: llm-deepseek is untouched', same(b.after?.['llm-deepseek'], b.before['llm-deepseek']))
   check('B: the custom route is covered', levelsOf(b.after, 'my-gateway', 'glm-5.3') === 'low,high,max', levelsOf(b.after, 'my-gateway', 'glm-5.3'))
-  check('B: agent-default-model gets the pinned level', b.after?.['agent-default-model']?.reasoningEffort === 'high', String(b.after?.['agent-default-model']?.reasoningEffort))
+  check('B: the global default is not written (one value cannot be checked against every model)', b.after?.['agent-default-model']?.reasoningEffort === undefined, String(b.after?.['agent-default-model']?.reasoningEffort))
   check('B: exits 1 while a decision is pending', b.status === 1, `exit ${b.status}`)
+
+  // Fixture C: the regression that mattered in practice. A route default equal to the level the
+  // writer would choose, on a route that also carries a model offering no levels at all. The
+  // value has to be *removed*, because DSH applies it to every model on the route and the model
+  // would fail with UNSUPPORTED_REASONING_EFFORT — and the old check order never looked.
+  const c = runFixture('fixture-breaking-default.yaml')
+  check('C: a route default that breaks a model is removed', c.after?.['llm-pi-ai']?.providers?.['mixed-route']?.reasoning === undefined, String(c.after?.['llm-pi-ai']?.providers?.['mixed-route']?.reasoning))
+  check('C: a global default unsafe for the default model is removed', c.after?.['agent-default-model']?.reasoningEffort === undefined, String(c.after?.['agent-default-model']?.reasoningEffort))
+  check('C: the model with real levels is still covered', levelsOf(c.after, 'mixed-route', 'glm-5.3') === 'low,high,max', levelsOf(c.after, 'mixed-route', 'glm-5.3'))
+  check('C: the model with no levels is left unwritten', levelsOf(c.after, 'mixed-route', 'fixture-unknown-model') === undefined, String(levelsOf(c.after, 'mixed-route', 'fixture-unknown-model')))
+  check('C: unrelated sections survive', c.after?.locale?.preference === 'zh')
+  check('C: exits 1 while a decision is pending', c.status === 1, `exit ${c.status}`)
 
   const failed = results.filter((r) => !r.ok)
   for (const r of results) console.log(`${r.ok ? 'ok  ' : 'FAIL'}  ${r.name}${r.ok || r.detail === undefined ? '' : `  (got ${r.detail})`}`)
@@ -572,8 +598,9 @@ if (wantDefault && !THINKING_LEVELS.includes(defaultLevel)) {
   console.error(`--default-effort must be a pi-ai level or "skip", got: ${defaultLevel}`)
   process.exit(2)
 }
-const offersLevel = (item) =>
-  typeof item?.target === 'object' && item.target !== null && Object.prototype.hasOwnProperty.call(item.target, defaultLevel)
+const supportsLevel = (item, level) =>
+  typeof item?.target === 'object' && item.target !== null && Object.prototype.hasOwnProperty.call(item.target, level)
+const offersLevel = (item) => supportsLevel(item, defaultLevel)
 
 const routeDefaults = []
 if (wantDefault) {
@@ -581,41 +608,70 @@ if (wantDefault) {
     if (catalogProviderIds.has(route.id)) continue
     const items = plan.filter((i) => i.route === route.id)
     if (items.length === 0) continue
-    const blocked = items.filter((i) => !offersLevel(i))
     const current = doc?.['llm-pi-ai']?.providers?.[route.id]?.reasoning
-    const entry = { route: route.id, current, level: defaultLevel, action: 'none', why: undefined }
-    if (current === defaultLevel) entry.why = `已经是 reasoning: ${defaultLevel}`
-    else if (blocked.length > 0) {
-      entry.action = 'blocked'
-      entry.why = blocked
-        .map((i) =>
-          i.target === false
-            ? `\`${i.model}\` 不支持思考`
-            : i.action === 'needs-decision'
-              ? `\`${i.model}\` 档位未确定`
-              : i.action === 'skip-by-decision'
-                ? `\`${i.model}\` 按你的决定未声明`
-                : `\`${i.model}\` 的真实档位里没有 ${defaultLevel}`,
-        )
-        .join('、')
+    const describe = (item) =>
+      item.target === false
+        ? `\`${item.model}\` 不支持思考`
+        : item.action === 'needs-decision'
+          ? `\`${item.model}\` 档位未确定`
+          : item.action === 'skip-by-decision'
+            ? `\`${item.model}\` 按你的决定未声明`
+            : `\`${item.model}\` 的真实档位里没有该档`
+    const entry = { route: route.id, current, level: defaultLevel, action: 'none', why: undefined, blockedBy: [] }
+
+    // Support is checked BEFORE "does the value already match". The old order announced
+    // "already reasoning: high — nothing to do" without ever asking whether every model on
+    // the route offers it, so a route default that had just made a newly added model
+    // unusable sat in the file unreported.
+    const blocksTarget = items.filter((i) => !supportsLevel(i, defaultLevel))
+    const blocksCurrent = current === undefined ? [] : items.filter((i) => !supportsLevel(i, current))
+
+    if (blocksCurrent.length > 0) {
+      // The value in the *file* is the dangerous one: DSH applies it to every request on the
+      // route (`options.reasoningEffort ?? profile.reasoning`), so those models fail with
+      // UNSUPPORTED_REASONING_EFFORT. Remove it to restore usability — it is re-added by
+      // itself once every model on the route supports a level again.
+      entry.action = 'remove-breaking'
+      entry.blockedBy = blocksCurrent.map((i) => i.model)
+      entry.why = `现有的 \`reasoning: ${current}\` 会被套用到该路由的**每个**模型，而 ${blocksCurrent.map(describe).join('、')}——这些模型的请求会以 UNSUPPORTED_REASONING_EFFORT 失败，因此移除它先把可用性恢复`
+    } else if (blocksTarget.length > 0) {
+      entry.action = current === undefined ? 'withheld' : 'keep-other'
+      entry.blockedBy = blocksTarget.map((i) => i.model)
+      entry.why =
+        current === undefined
+          ? `${blocksTarget.map(describe).join('、')}，因此不写入 ${defaultLevel}`
+          : `现有 \`reasoning: ${current}\` 对全路由都安全，保留；${blocksTarget.map(describe).join('、')}，因此不改写成 ${defaultLevel}`
+    } else if (current === defaultLevel) {
+      entry.why = `已经是 reasoning: ${defaultLevel}，且该路由每个模型都支持它`
     } else if (current !== undefined) {
       entry.action = doFix ? 'replace' : 'conflict'
       entry.why = `路由已经写着 reasoning: ${current}`
-    } else entry.action = 'insert'
+    } else {
+      entry.action = 'insert'
+    }
     routeDefaults.push(entry)
   }
 }
 
+// `agent-default-model.reasoningEffort` is a *global* value: it applies to whatever model a
+// new session happens to start on, so it cannot be checked against one model and trusted. It
+// is also short-lived — the picker's own selection rewrites it, and picking any model that has
+// no `defaultEffort` clears it. So this writer does not create it; it only removes it when it
+// can prove the configured default model does not offer the value.
 const agentDefault = { action: 'none', why: undefined }
 if (wantDefault) {
   const section = doc?.['agent-default-model']
-  if (section === undefined) agentDefault.why = 'settings 里没有 `agent-default-model` 段（不新建，避免写出不合 schema 的段）'
+  const current = section?.reasoningEffort
+  if (section === undefined) agentDefault.why = 'settings 里没有 `agent-default-model` 段'
+  else if (current === undefined) agentDefault.why = '未设置（不主动写入：它是全局值，选择器一换模型就可能失效；路由级默认已提供等价效果）'
   else {
     const item = plan.find((i) => i.route === section.provider && i.model === section.model)
-    if (section.reasoningEffort === defaultLevel) agentDefault.why = `已经是 ${defaultLevel}`
-    else if (item === undefined) agentDefault.why = `默认模型 \`${section.provider}/${section.model}\` 不在自定义路由上（目录路线或内置提供方），不越界修改`
-    else if (!offersLevel(item)) agentDefault.why = `默认模型 \`${section.provider}/${section.model}\` 的真实档位里没有 ${defaultLevel}`
-    else agentDefault.action = section.reasoningEffort === undefined ? 'insert' : doFix ? 'replace' : 'conflict'
+    if (item === undefined) agentDefault.why = `\`${current}\` 保留：默认模型 \`${section.provider}/${section.model}\` 不在自定义路由上，无法证明它不支持该档`
+    else if (supportsLevel(item, current)) agentDefault.why = `\`${current}\` 保留：默认模型 \`${section.provider}/${section.model}\` 支持它`
+    else {
+      agentDefault.action = 'remove-unsafe'
+      agentDefault.why = `默认模型 \`${section.provider}/${section.model}\` 的真实档位里没有 ${current}，新建会话的第一条请求就会失败，因此移除`
+    }
   }
 }
 
@@ -762,13 +818,16 @@ function buildReport() {
       const mark =
         entry.action === 'insert' ? '**写入**'
         : entry.action === 'replace' ? '**改写**（--fix）'
+        : entry.action === 'remove-breaking' ? '**移除（修复）**'
+        : entry.action === 'withheld' ? '**未写**'
+        : entry.action === 'keep-other' ? '保留现有值'
         : entry.action === 'conflict' ? '冲突（加 `--fix`）'
-        : entry.action === 'blocked' ? '**未写**'
         : '无需改动'
       out.push(`- \`${entry.route}\`：${mark}${entry.why === undefined ? '' : ` —— ${entry.why}`}`)
     }
     const agentMark =
       agentDefault.action === 'none' ? '无需改动'
+      : agentDefault.action === 'remove-unsafe' ? '**移除（修复）**'
       : agentDefault.action === 'insert' ? '**写入**'
       : agentDefault.action === 'replace' ? '**改写**（--fix）'
       : '冲突（加 `--fix`）'
@@ -910,19 +969,27 @@ if (doApply) {
     else if (!result.unchanged) failures.push(`\`${item.model}\`：${result.reason}`)
   }
 
-  // Route-level default: this is what removes the picker's "Default" entry.
+  // Route-level default: this is what removes the picker's "Default" entry, and its removal is
+  // the one repair this skill performs — a value applied to every model on the route must not
+  // break any of them.
   for (const entry of routeDefaults) {
-    if (entry.action !== 'insert' && entry.action !== 'replace') continue
-    const written = upsertRouteScalar(text, entry.route, 'reasoning', entry.level)
-    if (written.text !== undefined) text = written.text
-    if (written.changed) applied.push(`路线 \`${entry.route}\` 写入 \`reasoning: ${entry.level}\`（选择器不再出现 "Default"）`)
-    else if (!written.unchanged) failures.push(`\`${entry.route}\` 路由默认档位：${written.reason}`)
+    if (entry.action === 'insert' || entry.action === 'replace') {
+      const written = upsertRouteScalar(text, entry.route, 'reasoning', entry.level)
+      if (written.text !== undefined) text = written.text
+      if (written.changed) applied.push(`路线 \`${entry.route}\` 写入 \`reasoning: ${entry.level}\`（选择器不再出现 "Default"）`)
+      else if (!written.unchanged) failures.push(`\`${entry.route}\` 路由默认档位：${written.reason}`)
+    } else if (entry.action === 'remove-breaking') {
+      const removed = removeRouteScalar(text, entry.route, 'reasoning')
+      if (removed.text !== undefined) text = removed.text
+      if (removed.changed) applied.push(`路线 \`${entry.route}\` 移除 \`reasoning: ${entry.current}\`（它会让 ${entry.blockedBy.join('、')} 的请求报错，先把可用性恢复）`)
+      else if (!removed.unchanged) failures.push(`\`${entry.route}\` 移除路由默认：${removed.reason}`)
+    }
   }
-  if (agentDefault.action === 'insert' || agentDefault.action === 'replace') {
-    const written = upsertNamespaceScalar(text, 'agent-default-model', 'reasoningEffort', defaultLevel)
-    if (written.text !== undefined) text = written.text
-    if (written.changed) applied.push(`\`agent-default-model.reasoningEffort\` 设为 ${defaultLevel}（新建会话即默认 ${defaultLevel}）`)
-    else if (!written.unchanged) failures.push(`agent-default-model.reasoningEffort：${written.reason}`)
+  if (agentDefault.action === 'remove-unsafe') {
+    const removed = removeNamespaceScalar(text, 'agent-default-model', 'reasoningEffort')
+    if (removed.text !== undefined) text = removed.text
+    if (removed.changed) applied.push('移除 `agent-default-model.reasoningEffort`（对默认模型不可用，会让新建会话的第一条请求失败）')
+    else if (!removed.unchanged) failures.push(`agent-default-model.reasoningEffort：${removed.reason}`)
   }
 }
 
@@ -986,13 +1053,16 @@ if (text !== original) {
     }
     for (const entry of routeDefaults) {
       if (!validation.ok) break
-      if (entry.action !== 'insert' && entry.action !== 'replace') continue
       const got = validation.doc?.['llm-pi-ai']?.providers?.[entry.route]?.reasoning
-      if (got !== entry.level) validation = { ok: false, reason: `校验失败：\`${entry.route}\` 的 reasoning 读回为 ${String(got)}` }
+      if (entry.action === 'insert' || entry.action === 'replace') {
+        if (got !== entry.level) validation = { ok: false, reason: `校验失败：\`${entry.route}\` 的 reasoning 读回为 ${String(got)}` }
+      } else if (entry.action === 'remove-breaking') {
+        if (got !== undefined) validation = { ok: false, reason: `校验失败：\`${entry.route}\` 的 reasoning 未被移除（读回 ${String(got)}）` }
+      }
     }
-    if (validation.ok && (agentDefault.action === 'insert' || agentDefault.action === 'replace')) {
+    if (validation.ok && agentDefault.action === 'remove-unsafe') {
       const got = validation.doc?.['agent-default-model']?.reasoningEffort
-      if (got !== defaultLevel) validation = { ok: false, reason: `校验失败：agent-default-model.reasoningEffort 读回为 ${String(got)}` }
+      if (got !== undefined) validation = { ok: false, reason: `校验失败：agent-default-model.reasoningEffort 未被移除（读回 ${String(got)}）` }
     }
   }
 }
@@ -1022,18 +1092,19 @@ const coverage = routes
       undecided: items.filter((i) => i.action === 'needs-decision').length,
     }
   })
-const blockedDefaults = routeDefaults.filter((e) => e.action === 'blocked')
-const defaultWrites = [
-  ...routeDefaults.filter((e) => e.action === 'insert' || e.action === 'replace'),
-  ...(agentDefault.action === 'insert' || agentDefault.action === 'replace' ? ['agent-default-model'] : []),
-]
+// A route whose models disagree about levels cannot carry a route default at all — DSH applies
+// that field to every model on the route and throws for a model that does not offer the level.
+// That is a permanent property of such a route, not a pending task, so it is *reported* (in the
+// default-effort section and in `routeDefaultsUnmet`) without keeping the exit code non-zero
+// forever. What it costs is stated where the user will see it: those models keep a "Default" row.
+const unmetDefaults = routeDefaults.filter((e) => e.action === 'withheld' || e.action === 'remove-breaking' || e.action === 'keep-other')
+const defaultWrites = routeDefaults.filter((e) => e.action === 'insert' || e.action === 'replace')
 const pendingWork = actions.length > 0 || conflicts.length > 0 || defaultWrites.length > 0
 
 let verdict
 if (failures.length > 0 || !validation.ok) verdict = 'blocked'
 else if (undecided.length > 0) verdict = 'needs-decision'
 else if (conflicts.length > 0) verdict = 'conflicts'
-else if (blockedDefaults.length > 0) verdict = 'needs-decision'
 else if (!doApply && pendingWork) verdict = 'pending'
 else verdict = 'covered'
 
@@ -1059,9 +1130,6 @@ if (verdict === 'blocked') {
 } else if (conflicts.length > 0) {
   nextAction = 'resolve-conflicts'
   commands.push('node scripts/apply-reasoning-efforts.mjs --fix --apply')
-} else if (blockedDefaults.length > 0) {
-  nextAction = 'decide-route-default'
-  for (const entry of blockedDefaults) commands.push(`node scripts/apply-reasoning-efforts.mjs --default-effort skip --route ${entry.route} --apply`)
 } else if (verdict === 'pending') {
   nextAction = 'apply'
   commands.push('node scripts/apply-reasoning-efforts.mjs --apply')
@@ -1084,6 +1152,7 @@ if (asJson) {
     nextAction,
     commands,
     coverage,
+    routeDefaultsUnmet: unmetDefaults.map((e) => ({ route: e.route, action: e.action, blockedBy: e.blockedBy, why: e.why })),
     plan,
     moves: moves.map((m) => ({ route: m.route, model: m.model, catalogApi: m.catalogApi, routeApi: m.routeApi })),
     readOnly,

@@ -346,6 +346,46 @@ function upsertChildScalar(parts, blockStart, blockStop, indent, key, value, bef
   return { changed: true, text: joinText(parts), action: 'inserted' }
 }
 
+/**
+ * Remove a scalar field from a route block.
+ *
+ * Needed for the one destructive repair in this skill: a route-level `reasoning:` value is
+ * applied to *every* model on the route, so once a model that does not offer it is added,
+ * that field makes the model unusable and has to come out — the writer re-adds it as soon as
+ * every model on the route supports it again.
+ */
+export function removeRouteScalar(text, routeId, key) {
+  const parts = splitText(text)
+  const { lines } = parts
+  const route = locateRoute(lines, routeId)
+  if (route === undefined) return { changed: false, reason: `route "${routeId}" not found` }
+  const fieldIndent = childIndentOf(lines, route.keyLine + 1, route.end) ?? route.routeIndent + 2
+  return removeChildScalar(parts, route.keyLine, route.end, fieldIndent, key)
+}
+
+/** Remove a scalar field from a top-level namespace block. */
+export function removeNamespaceScalar(text, namespace, key) {
+  const parts = splitText(text)
+  const { lines } = parts
+  const ns = childByKey(lines, 0, lines.length, namespace)
+  if (ns === undefined) return { changed: false, reason: `namespace "${namespace}" not found` }
+  const indent = childIndentOf(lines, ns.keyLine + 1, ns.end)
+  if (indent === undefined) return { changed: false, reason: `namespace "${namespace}" has no fields to remove` }
+  return removeChildScalar(parts, ns.keyLine, ns.end, indent, key)
+}
+
+function removeChildScalar(parts, blockStart, blockStop, indent, key) {
+  const { lines } = parts
+  for (let i = blockStart + 1; i < blockStop; i++) {
+    const info = analyzeLine(lines[i])
+    if (info.itemIndent !== undefined || info.indent !== indent || info.key !== key) continue
+    const stop = /[{[]/.test(lines[i]) ? i + 1 : blockEnd(lines, i, indent)
+    lines.splice(i, stop - i)
+    return { changed: true, text: joinText(parts), action: 'removed' }
+  }
+  return { changed: false, reason: `${key} is not set`, unchanged: true }
+}
+
 /** Every route under `llm-pi-ai.providers`, as `{ id, api, baseURL, modelIds }`. */
 export function listRoutes(lines) {
   const top = childByKey(lines, 0, lines.length, 'llm-pi-ai')

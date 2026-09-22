@@ -138,6 +138,21 @@ Two properties follow, and they are why the writer guards the write:
 The writer therefore writes a route default only when **every** model on that route declares the
 level, and otherwise reports the route as not-written with the models that blocked it.
 
+**A third property, and the one that bites in practice:** a route containing a model that declares
+no levels at all can never carry a route default. The support check runs against *that* model too —
+`getSupportedThinkingLevels` returns `['off']` for a non-reasoning model, so `high` is not in the
+list and the request throws. This is why the writer **removes** a route default the moment a model
+on the route stops supporting it: the removal is the repair that restores usability, and the default
+comes back on its own once every model on the route supports a level again. Keeping both properties
+— no `Default` row *and* a usable model — requires giving the incompatible models their own route.
+A route default is also the only thing this writer ever removes.
+
+`agent-default-model.reasoningEffort` is deliberately never written: it is a global value applied to
+whatever model a new session starts on, so it cannot be verified against one model and trusted — and
+it is short-lived anyway, because the picker's own selection rewrites it and selecting a model with
+no `defaultEffort` clears it. The writer only removes it, and only when it can prove the configured
+default model does not offer the value.
+
 `agent-default-model.reasoningEffort` is a separate, weaker knob: it is the initial selection for
 a **new** session. It does not retroactively change a session that has already logged a request.
 

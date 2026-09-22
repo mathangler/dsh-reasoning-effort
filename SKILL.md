@@ -47,7 +47,6 @@ markdown report is for showing the user, not for you to interpret.
 | `apply` | run the command in `commands`, then step 4 |
 | `search-then-ask` | For each `commands` entry, first **research the model**: the provider's own documentation (`reasoning_effort`, `thinking.type`, `enable_thinking`, `thinking_budget`, `output_config.effort`), then models.dev. Found a citable page? Record what it documents with `--evidence vendor --source <url>`. Found nothing? **Ask the user** which of the listed commands to run, quoting the recommended level sets. Never pick a level set yourself. |
 | `resolve-conflicts` | Tell the user which declarations disagree with the evidence, and run the `--fix` command only if they agree. |
-| `decide-route-default` | Tell the user which route kept its "Default" row and which model blocked the default; run the offered command only if they choose it. |
 | `report-blocker` | Nothing was written. Show the `❌` line and stop. |
 
 **4. Verify.**
@@ -87,6 +86,12 @@ model still undecided. Then tell the user to open the `/model` picker's **Effort
   there (that needs `--fix`, which is the user's call).
 - `--route` narrows the run to one route; the tool then reports `scope: partial`, and `exit 0`
   only means *those* routes are covered. Only use it when the user asks about one route.
+- A route-level default is applied to **every** model on the route, so the writer removes one that
+  a model cannot accept — that is the single repair it performs, and it re-adds the default once
+  every model supports a level again. Never put it back by hand.
+- Some routes can never carry a default: if any model on the route declares no levels at all, DSH
+  would throw for that model. The report says so under 默认档位 and `routeDefaultsUnmet`; the fix
+  is to give those models their own route, and that is the user's call, not yours.
 
 ## When the user asks "why"
 

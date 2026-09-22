@@ -1,0 +1,32 @@
+# Fixture: a route-level default that breaks a model the route also carries.
+#
+# DSH applies a route's `reasoning:` to EVERY model on that route
+# (`options.reasoningEffort ?? profile.reasoning`) and refuses at request time when a model
+# does not offer that level, with UNSUPPORTED_REASONING_EFFORT. `fixture-unknown-model` has no
+# catalog entry and no declaration, so it offers nothing at all — the route default alone makes
+# every request to it fail.
+#
+# What makes this fixture the important one: the value in the file already equals the level the
+# writer would otherwise choose, so a check order of "does the value match?" before "does every
+# model support it?" concludes "already correct, nothing to do" and leaves the breakage in
+# place. The writer must remove it instead — and it must come back on its own once every model
+# on the route supports a level again.
+llm-pi-ai:
+  providers:
+    mixed-route:
+      apiKeyEnv: MIXED_KEY
+      baseURL: https://opencode.ai/zen/go/v1
+      api: openai-completions
+      reasoning: high
+      models:
+        - id: glm-5.3
+          name: glm-5.3
+        - id: fixture-unknown-model
+          name: a model no catalog provider attests to
+agent-default-model:
+  provider: mixed-route
+  model: fixture-unknown-model
+  reasoningEffort: high
+llm-deepseek: {}
+locale:
+  preference: zh

@@ -40,3 +40,19 @@ entries:
     evidence: vendor
     source: https://api-docs.deepseek.com/quick_start/pricing
     note: Same family as deepseek-v4-flash; vendor-documented thinking controls.
+  - match:
+      provider: opencode-go-0
+      model: mimo-v2.6-flash
+    decidedAt: '2026-09-22'
+    evidence: vendor
+    source: https://raw.githubusercontent.com/anomalyco/models.dev/dev/providers/opencode-go/models/mimo-v2.6-flash.toml
+    reasoning: false
+    note: 'vendor decision: non-reasoning model'
+  - match:
+      provider: opencode-go-0
+      model: mimo-v2.6-pro
+    decidedAt: '2026-09-22'
+    evidence: vendor
+    source: https://raw.githubusercontent.com/anomalyco/models.dev/dev/providers/opencode-go/models/mimo-v2.6-pro.toml
+    reasoning: false
+    note: 'vendor decision: non-reasoning model'
