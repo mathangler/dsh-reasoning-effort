@@ -23,8 +23,9 @@
 4. **内置提供方一律不动。** 包括原生 `llm-deepseek` 命名空间、pi-ai 目录全部 40 个 provider id、
    以及任何其他 `llm-*` 命名空间。判定看**路由名**而不是看厂商：叫 `my-gemini` 的是自定义、会被写；
    叫 `google` 的就是内置、不碰。
-5. **不留"默认"。** 思考模型会拿到路由级 `reasoning: high`（可配置），使选择器**去掉 `Default` 项**并钉住档位；
-   另外写入 `agent-default-model.reasoningEffort: high` 作为**新建**会话的初始档位。
+5. **路由级默认档一律不写，而且是刻意不写。** 路由级 `reasoning:` 会被套用到该路由的**每个**模型上，
+   留着它既把选择器的默认档从"默认"钉走，又会在你下次加一个不支持该档的模型时直接弄坏整条路由。
+   所以每个模型都保持网关自己的默认档——也就是选择器里的**"默认"**——这是该路由上每个模型都能接受的取值。
 6. **一次跑完。** 一次 `--apply` 覆盖新增提供方、新增模型、修改模型、删除模型。**幂等且只做增量**：
    只补空缺，绝不改写已经存在的声明。
 7. **三平台。** Windows / macOS / Linux；无需安装依赖——`js-yaml` 直接从你的 DSH 安装里取。
@@ -178,7 +179,7 @@ Remove-Item -Recurse -Force "$env:USERPROFILE\.dsh\skills\dsh-reasoning-effort"
 
 项目级安装同理，删除 `<项目>/.dsh/skills/dsh-reasoning-effort` 即可。
 
-**卸载技能不会撤销它做过的改动。** `reasoningEfforts` 声明与路由级 `reasoning:` 值会留在
+**卸载技能不会撤销它做过的改动。** `reasoningEfforts` 声明、以及对路由级 `reasoning:` 的移除都会留在
 `settings.yaml` 里——它们是普通的配置，不是技能在运行时注入的东西。请在删除目录**之前**先跑
 `--restore latest`（见下方「回滚」），或者手工删掉那些声明。
 
@@ -210,7 +211,7 @@ node scripts/apply-reasoning-efforts.mjs --self-test   # 退出 0 = 本机与文
 node scripts/apply-reasoning-efforts.mjs --apply       # 全部工作
 ```
 
-它会扫描每条自定义路由、补齐缺失声明、写入路由默认档，**写前备份**、**写后逐路径校验**并报告。
+它会扫描每条自定义路由、补齐缺失声明、**移除**它发现的路由级默认档，**写前备份**、**写后逐路径校验**并报告。
 跑完只可能剩两种情形，且都不会静默：
 
 | 剩余项 | 原因 | 运行行为 |
@@ -228,7 +229,9 @@ llm-pi-ai:
     my-gateway:                       # 自定义路由：路由名不是目录 provider id
       baseURL: https://…
       api: openai-completions
-      reasoning: high                 # → defaultEffort：去掉选择器里的 "Default" 项
+      # 这里永远不写 `reasoning:`：它作用于整条路由，只要有一个模型没有该档
+      # （包括非推理模型），它的每个请求都会以 UNSUPPORTED_REASONING_EFFORT 失败。
+      # 选择器里的"默认"项才是预期状态。
       models:
         - id: glm-5.3
           reasoningEfforts:           # 该模型真实拥有的档位——没有 `off`，因为它永远在思考
@@ -238,24 +241,22 @@ llm-pi-ai:
         - id: a-model-that-does-not-reason
           reasoningEfforts: false     # 显式声明，绝不靠"缺失"表达
 agent-default-model:
-  reasoningEffort: high               # 由你手写或 GUI 写入，本技能从不写它
+  reasoningEffort: high               # 选择器给"新建会话"用的字段：由 GUI 写；只有默认模型
+                                      # 吃不下这个档位时，本技能才会把它移除
 ```
 
 内置路由与 `llm-deepseek` 命名空间只做只读呈现，永不写入。
 
 ### 关于默认档的两条规则（都是踩过坑才定下的）
 
-- **路由级默认会被套用到该路由的每一个模型**，而 DSH 对不支持该档的模型直接抛
-  `UNSUPPORTED_REASONING_EFFORT`——**包括完全没有档位声明的模型**。所以只要有一个模型接受不了，
-  写入器就会**移除**该路由默认，并在全路由都支持时自动重新写上。这是本技能**唯一**的破坏性改动，
-  报告里一定会点名是哪个模型导致的。
-- **从不主动写入 `agent-default-model.reasoningEffort`。** 它是全局值、作用于"新建会话恰好落在哪个模型"，
-  无法用一个模型证明它对所有模型安全；而且它本来就短命——选择器一改就会重写它，选到任何没有
-  `defaultEffort` 的模型还会把它清掉。写入器只在能**证明**默认模型不支持该档时才移除它。
-
-因此当一条路由上的模型档位不一致时，该路由最终不会有默认档，其模型会重新出现 `Default` 项。
-这一点会在报告的 `默认档位` 段落与 `routeDefaultsUnmet` 里说明；想把"没有 Default"这个性质拿回来，
-得把不兼容的模型单独放到另一条路由上。
+- **路由级 `reasoning:` 会被套用到该路由的每一个模型**，而 DSH 对不支持该档的模型直接抛
+  `UNSUPPORTED_REASONING_EFFORT`——**包括完全没有档位声明的模型和非推理模型**。所以写入器**从不写**这个字段，
+  发现就移除，不管当下有没有模型反对它：即使它"现在安全"，也会把选择器的默认档从"默认"钉走，
+  并为下一个加进来的模型重新埋上同一个坑。没有路由默认档时，选择器显示的就是**"默认"**——这正是预期状态。
+  只要还有自定义路由带着这个字段，本次运行就不可能判定为 `covered`。
+- **从不主动写入 `agent-default-model.reasoningEffort`。** 它是选择器自己的字段——**新建**会话的初始档位，
+  你每次选模型或选档位它都会被重写——所以写入器不会去清掉你做过的选择。只有当它能**证明**默认模型不支持该档
+  （那会让每个新建会话的第一条请求都失败）时，才移除这个值。
 
 ### 两个数据层
 
@@ -285,7 +286,6 @@ node scripts/apply-reasoning-efforts.mjs --decide 'my-gateway/my-model=skip'    
 | `--apply` | 落盘（备份 → 编辑 → 重解析 → 越界检查 → 回读校验 → 写入） |
 | `--route <名称>` | 限定路由（可重复） |
 | `--fix` | 同时对与证据冲突的声明做对齐 |
-| `--default-effort <档位\|skip>` | 钉为默认的档位（默认 `high`；`skip` 关闭这类写入） |
 | `--probe` | 允许每个模型发**一次**最小请求来记录"网关接受"（**会产生费用**） |
 | `--strict` | 只写证据为实发探测的模型 |
 | `--fix-routes` | 迁移"目录协议与所在路线不一致"的模型 —— **必须显式给 `--route`**，因为网关不总按目录分流，这个操作有可能弄坏一条当前可用的路线 |
@@ -310,15 +310,17 @@ node scripts/apply-reasoning-efforts.mjs --decide 'my-gateway/my-model=skip'    
 ## 验证
 
 1. **配置可解析** —— `node scripts/check-reasoning-route.mjs` 无 problem。
-2. **选择器给对了档位** —— 刷新 GUI，打开 `/model` 选择器的 **Effort** 面板：`Default` 项消失、
-   预选 `High`、每个模型显示自己的真实档位（强制思考的模型没有 `Off`）。
+2. **选择器给对了档位** —— 刷新 GUI，打开 `/model` 选择器的 **Effort** 面板：推理模型列出的正好是报告里给它的档位，
+   且预选 **"默认"**；声明为 `false` 的模型完全没有 Effort 面板。
 3. **线路上真的兑现** —— `--probe` 记录网关是否接受该取值。注意它的边界：**被接受不等于思考深度真的变了**。
 
-想在**不碰真实配置**的前提下看全所有结局（声明 / 提问 / 非推理，以及内置边界）：
+想在**不碰真实配置**的前提下看全所有结局（声明 / 提问 / 非推理、内置边界，以及两种路由默认档）：
 
 ```sh
 node scripts/apply-reasoning-efforts.mjs --settings scripts/fixture-settings.yaml
 node scripts/apply-reasoning-efforts.mjs --settings scripts/fixture-builtin-settings.yaml
+node scripts/apply-reasoning-efforts.mjs --settings scripts/fixture-breaking-default.yaml
+node scripts/apply-reasoning-efforts.mjs --settings scripts/fixture-pinned-default.yaml
 ```
 
 ## 回滚
@@ -335,9 +337,11 @@ node scripts/apply-reasoning-efforts.mjs --settings scripts/fixture-builtin-sett
   `"withhold"`（只有 pi-ai 目录能设置它），所以 completions 路线什么都不发。声明思考强度改变不了这一点。
 - **公开的端点表不是权威。** 某网关把 `/responses` 文档化为只服务少数模型，实测却在该路径上连续服务了
   另一个模型 **64 次**且零错误。协议差异只作为提示，绝不自动动作。
-- **路由默认是"路由级"的。** 配置 schema 没有按模型的默认档，因此该路由上不支持所钉档位的模型会保留
-  `Default` 项，且路由默认套到它身上时请求会失败。所以技能只在**全路由模型都声明了该档**时才写入默认，
-  否则把该路由报成"未写"。
+- **路由默认是"路由级"的。** 配置 schema 没有按模型的默认档，所以这个字段会落到该路由的每个模型上：
+  只要有一个模型没有该档（非推理模型也算），它的每个请求都会以 `UNSUPPORTED_REASONING_EFFORT` 失败，
+  而且所有模型的选择器都不会再有"默认"项。因此写入器从不写它、发现就移除。
+  如果你**就是想**钉一个默认档，手工写上去，并接受"下次从 GUI 加一个模型就可能弄坏这条路由"；
+  技能下一次运行会报告并移除它。
 - **`anthropic-messages` 把档位换算成 thinking 预算**，不是发 effort 字符串；该协议下声明里的*值*是惰性的，
   真正有意义的是档位集合。
 - **动态 Cordis 插件写不了 settings**（realm 敏感的 `isPlainObject`）。用插件读，用文件写。

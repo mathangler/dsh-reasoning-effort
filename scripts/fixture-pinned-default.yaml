@@ -1,0 +1,35 @@
+# Fixture: a route default that is safe for *every* model on its route.
+#
+# This is the file a previous revision of the skill would have produced on purpose: `reasoning:
+# high` written route-wide, because every model on the route offers `high` ("low/high/max"), which
+# is what removed the picker's "Default" entry. It still has to come out.
+#
+# Why: the value belongs to the whole route, and DSH applies it to every model on it. "Safe" is
+# therefore a statement about today's model list only — the next model added through the GUI, or a
+# model that does not reason at all, turns the same line into UNSUPPORTED_REASONING_EFFORT on every
+# request. Keeping the default out of the document is what makes the picker show "默认" and lets
+# each model fall back to its gateway's own default, which every model accepts.
+#
+# The global `agent-default-model.reasoningEffort` is the opposite case and must survive: it is the
+# picker's own field holding the user's choice, and the model it names (`glm-5.3`) really offers
+# `high`. `fixture-breaking-default.yaml` covers the removal, for a default model that does not.
+llm-pi-ai:
+  providers:
+    pinned-route:
+      displayName: Pinned Route
+      apiKeyEnv: PINNED_KEY
+      baseURL: https://opencode.ai/zen/go/v1
+      api: openai-completions
+      reasoning: high
+      models:
+        - id: glm-5.3
+          name: glm-5.3
+        - id: glm-5.3-flash
+          name: glm-5.3-flash
+agent-default-model:
+  provider: pinned-route
+  model: glm-5.3
+  reasoningEffort: high
+llm-deepseek: {}
+locale:
+  preference: zh

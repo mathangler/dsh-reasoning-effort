@@ -196,6 +196,21 @@ for (const route of routes) {
     for (const p of problems) report.problems.push(`route "${route.id}" model "${modelId}": ${p}`)
   }
 
+  // A route-level default is a defect in either case, and the writer removes it. It applies to
+  // *every* model on the route, so with one model that lacks the level it is a failure waiting for
+  // the next request; with none, it still pins the picker away from "Default" and becomes that
+  // failure the moment a model is added through the GUI.
+  const routeDefault = profile.reasoning
+  entry.reasoning = routeDefault
+  if (routeDefault !== undefined) {
+    const blocking = entry.models.filter((m) => !m.offered.includes(routeDefault))
+    report.problems.push(
+      blocking.length > 0
+        ? `route "${route.id}": pins reasoning "${routeDefault}", which ${blocking.map((m) => `"${m.id}"`).join(', ')} cannot offer — every request to those models fails with UNSUPPORTED_REASONING_EFFORT once the route value is applied`
+        : `route "${route.id}": pins reasoning "${routeDefault}" route-wide — safe for today's model list only; it hides the picker's "Default" entry and breaks the next model added to this route that lacks the level`,
+    )
+  }
+
   // Route-level compat: a strict write rejects the route when NO model speaks a
   // protocol that takes the field.
   for (const field of Object.keys(profile.compat ?? {})) {
@@ -251,6 +266,7 @@ if (has('--json')) {
     console.log(`\n${'='.repeat(72)}\nroute: ${r.route}`)
     console.log(`  route kind        : ${r.declared ? 'hand-declared (catalog knows no provider by this name)' : 'catalog route (inherits metadata)'}`)
     console.log(`  route api         : ${r.api ?? '(absent)'}`)
+    console.log(`  route default     : ${r.reasoning === undefined ? '(none — the picker shows "Default", which every model on the route accepts)' : `reasoning: ${r.reasoning}  <-- route-wide; remove it (the writer does)`}`)
     if (r.baseURL !== undefined) console.log(`  baseURL           : ${r.baseURL}`)
     if (r.catalogProvider !== undefined && r.declared) {
       console.log(`  catalog provider  : ${r.catalogProvider} ${r.catalogMatchConfidence === 'model-ids' ? '(weak match: by model ids, no baseURL match)' : '(same base URL)'}`)

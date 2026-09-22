@@ -35,7 +35,6 @@ import {
   splitText,
   upsertNamespaceScalar,
   upsertReasoningEfforts,
-  upsertRouteScalar,
 } from './lib/yaml-edit.mjs'
 import {
   THINKING_LEVELS,
@@ -66,7 +65,7 @@ const SKILL_DIR = resolve(dirname(fileURLToPath(import.meta.url)), '..')
 // for a tool an agent drives, because the agent has no way to notice. Every valid flag is
 // listed here, and anything else exits 2 before a single file is read.
 const CONTRACT = 1
-const VALUE_FLAGS = new Set(['--settings', '--dsh-root', '--route', '--decide', '--evidence', '--source', '--default-effort', '--report', '--restore'])
+const VALUE_FLAGS = new Set(['--settings', '--dsh-root', '--route', '--decide', '--evidence', '--source', '--report', '--restore'])
 const BOOLEAN_FLAGS = new Set(['--apply', '--fix', '--strict', '--probe', '--fix-routes', '--json', '--timestamped-backup', '--self-test', '--help', '-h'])
 
 const argv = []
@@ -120,13 +119,13 @@ if (has('--help') || has('-h')) {
   --decide <spec>     record an answer: <route>/<model>=<levels|false|skip>
   --evidence <kind>   with --decide: "user" (default) or "vendor" (requires --source)
   --source <url>      the citation for an --evidence vendor fact
-  --default-effort <level|skip>
-                      level pinned as the default (default: high; skip writes nothing)
   --self-test         run the shipped fixtures, assert the contract, then exit
   --report <path>     also write the markdown report to this file
   --json              machine-readable output, including verdict and nextAction
 
-  human-only — never needed to bring a document up to date:
+  A route-level \`reasoning:\` is never written, and removed whenever it is present: DSH
+  applies it to every model on the route, so one model that lacks that level makes the
+  whole route fail (see REFERENCE.md, "the route default").
 
 Exit codes: 0 every custom route is covered · 1 something is pending or broken ·
             2 the environment or the invocation is unusable
@@ -171,7 +170,7 @@ if (has('--self-test')) {
   check('A: a catalog model gets the levels the catalog declares', levelsOf(a.after, 'fixture-gateway', 'glm-5.3') === 'low,high,max', levelsOf(a.after, 'fixture-gateway', 'glm-5.3'))
   check('A: a model with no evidence is left unwritten', levelsOf(a.after, 'fixture-gateway', 'union-alpha') === undefined, String(levelsOf(a.after, 'fixture-gateway', 'union-alpha')))
   check('A: a non-reasoning model is declared explicitly false', levelsOf(a.after, 'fixture-bedrock', 'mistral.ministral-3-14b-instruct') === false, String(levelsOf(a.after, 'fixture-bedrock', 'mistral.ministral-3-14b-instruct')))
-  check('A: no route default while a model is undecided', a.after?.['llm-pi-ai']?.providers?.['fixture-gateway']?.reasoning === undefined, String(a.after?.['llm-pi-ai']?.providers?.['fixture-gateway']?.reasoning))
+  check('A: no route default is ever written', a.after?.['llm-pi-ai']?.providers?.['fixture-gateway']?.reasoning === undefined, String(a.after?.['llm-pi-ai']?.providers?.['fixture-gateway']?.reasoning))
   check('A: unrelated sections survive', a.after?.locale?.preference === 'zh')
   check('A: exits 1 while a decision is pending', a.status === 1, `exit ${a.status}`)
 
@@ -187,17 +186,29 @@ if (has('--self-test')) {
   check('B: the global default is not written (one value cannot be checked against every model)', b.after?.['agent-default-model']?.reasoningEffort === undefined, String(b.after?.['agent-default-model']?.reasoningEffort))
   check('B: exits 1 while a decision is pending', b.status === 1, `exit ${b.status}`)
 
-  // Fixture C: the regression that mattered in practice. A route default equal to the level the
-  // writer would choose, on a route that also carries a model offering no levels at all. The
-  // value has to be *removed*, because DSH applies it to every model on the route and the model
-  // would fail with UNSUPPORTED_REASONING_EFFORT — and the old check order never looked.
+  // Fixture C: the regression that mattered in practice. A route default of `high` on a route that
+  // also carries a model offering no levels at all. The value has to come out, because DSH applies
+  // it to every model on the route and that model would fail with UNSUPPORTED_REASONING_EFFORT —
+  // and the old check order ("does the value already match?") never looked.
   const c = runFixture('fixture-breaking-default.yaml')
-  check('C: a route default that breaks a model is removed', c.after?.['llm-pi-ai']?.providers?.['mixed-route']?.reasoning === undefined, String(c.after?.['llm-pi-ai']?.providers?.['mixed-route']?.reasoning))
+  check('C: the route default that breaks a model is removed', c.after?.['llm-pi-ai']?.providers?.['mixed-route']?.reasoning === undefined, String(c.after?.['llm-pi-ai']?.providers?.['mixed-route']?.reasoning))
   check('C: a global default unsafe for the default model is removed', c.after?.['agent-default-model']?.reasoningEffort === undefined, String(c.after?.['agent-default-model']?.reasoningEffort))
   check('C: the model with real levels is still covered', levelsOf(c.after, 'mixed-route', 'glm-5.3') === 'low,high,max', levelsOf(c.after, 'mixed-route', 'glm-5.3'))
   check('C: the model with no levels is left unwritten', levelsOf(c.after, 'mixed-route', 'fixture-unknown-model') === undefined, String(levelsOf(c.after, 'mixed-route', 'fixture-unknown-model')))
   check('C: unrelated sections survive', c.after?.locale?.preference === 'zh')
   check('C: exits 1 while a decision is pending', c.status === 1, `exit ${c.status}`)
+
+  // Fixture D: the same field, but safe for every model on the route. It still has to be removed —
+  // "safe" only describes today's model list, and the next model added turns the line into the
+  // failure fixture C reproduces. The global `agent-default-model.reasoningEffort` is the opposite
+  // case: it is the picker's own field holding the user's choice, and the model it names really
+  // offers `high`, so it stays. With every model covered, this is also the fixture that must reach
+  // exit 0 — the only one where "nothing pending" is the correct answer.
+  const d = runFixture('fixture-pinned-default.yaml')
+  check('D: a route default that no model objects to is removed as well', d.after?.['llm-pi-ai']?.providers?.['pinned-route']?.reasoning === undefined, String(d.after?.['llm-pi-ai']?.providers?.['pinned-route']?.reasoning))
+  check('D: every model keeps the levels the catalog declares', levelsOf(d.after, 'pinned-route', 'glm-5.3') === 'low,high,max' && levelsOf(d.after, 'pinned-route', 'glm-5.3-flash') === 'low,high,max', `${levelsOf(d.after, 'pinned-route', 'glm-5.3')} / ${levelsOf(d.after, 'pinned-route', 'glm-5.3-flash')}`)
+  check('D: a global default the default model supports is left alone', d.after?.['agent-default-model']?.reasoningEffort === 'high', String(d.after?.['agent-default-model']?.reasoningEffort))
+  check('D: exits 0 — every model declared and no route default left', d.status === 0, `exit ${d.status}`)
 
   const failed = results.filter((r) => !r.ok)
   for (const r of results) console.log(`${r.ok ? 'ok  ' : 'FAIL'}  ${r.name}${r.ok || r.detail === undefined ? '' : `  (got ${r.detail})`}`)
@@ -585,85 +596,70 @@ const skipped = plan.filter((i) => i.action === 'skip-strict')
 const undecided = plan.filter((i) => i.action === 'needs-decision')
 const byDecision = plan.filter((i) => i.action === 'skip-by-decision')
 
-// ------------------------------------------------------------------ defaults
-// A defined `defaultEffort` is what makes the picker drop its "Default" entry, and
-// the only source of one is the route-level `reasoning:` field. It applies to
-// *every* model on the route — `resolveReasoningLevel` throws for a model that does
-// not offer the level — so it may only be written when every model on the route
-// genuinely offers it. Without this, a model sits at "Default" and the gateway's own
-// default decides how hard it thinks.
-const defaultLevel = flagValue('--default-effort', 'high')
-const wantDefault = !['skip', 'none', 'no', 'off'].includes(defaultLevel)
-if (wantDefault && !THINKING_LEVELS.includes(defaultLevel)) {
-  console.error(`--default-effort must be a pi-ai level or "skip", got: ${defaultLevel}`)
-  process.exit(2)
-}
+// --------------------------------------------------------------- route default
+// DSH has exactly one way to pin a default effort: the *route-level* `reasoning:` field, the
+// only source of `defaultEffort`. It is also the most dangerous field in this document, because
+// the adapter applies it to every model on the route — `resolveReasoningLevel(model,
+// options.reasoningEffort ?? profile.reasoning)` — and throws UNSUPPORTED_REASONING_EFFORT for a
+// model that does not offer that level, a model that does not reason at all included. A route
+// default is therefore only "safe" until the next model is added to that route, which is exactly
+// how a working configuration breaks: adding one model through the GUI is enough.
+//
+// So this skill never writes one. With no route default the picker offers "默认" and each model
+// falls back to whatever its gateway does by default — a value every model can always accept.
+// An existing value is removed whether or not it currently breaks a model: a currently safe one
+// is still a value applied route-wide, so it would pin the picker away from "默认" and re-arm the
+// same failure for the next model added.
 const supportsLevel = (item, level) =>
   typeof item?.target === 'object' && item.target !== null && Object.prototype.hasOwnProperty.call(item.target, level)
-const offersLevel = (item) => supportsLevel(item, defaultLevel)
 
 const routeDefaults = []
-if (wantDefault) {
-  for (const route of routes) {
-    if (catalogProviderIds.has(route.id)) continue
-    const items = plan.filter((i) => i.route === route.id)
-    if (items.length === 0) continue
-    const current = doc?.['llm-pi-ai']?.providers?.[route.id]?.reasoning
-    const describe = (item) =>
-      item.target === false
-        ? `\`${item.model}\` 不支持思考`
-        : item.action === 'needs-decision'
-          ? `\`${item.model}\` 档位未确定`
-          : item.action === 'skip-by-decision'
-            ? `\`${item.model}\` 按你的决定未声明`
-            : `\`${item.model}\` 的真实档位里没有该档`
-    const entry = { route: route.id, current, level: defaultLevel, action: 'none', why: undefined, blockedBy: [] }
+for (const route of routes) {
+  if (catalogProviderIds.has(route.id)) continue
+  const items = plan.filter((i) => i.route === route.id)
+  if (items.length === 0) continue
+  const current = doc?.['llm-pi-ai']?.providers?.[route.id]?.reasoning
+  const describe = (item) =>
+    item.target === false
+      ? `\`${item.model}\` 不支持思考`
+      : item.action === 'needs-decision'
+        ? `\`${item.model}\` 档位未确定`
+        : item.action === 'skip-by-decision'
+          ? `\`${item.model}\` 按你的决定未声明`
+          : `\`${item.model}\` 的真实档位里没有该档`
+  const entry = { route: route.id, current, action: 'none', why: undefined, blockedBy: [] }
 
-    // Support is checked BEFORE "does the value already match". The old order announced
-    // "already reasoning: high — nothing to do" without ever asking whether every model on
-    // the route offers it, so a route default that had just made a newly added model
-    // unusable sat in the file unreported.
-    const blocksTarget = items.filter((i) => !supportsLevel(i, defaultLevel))
-    const blocksCurrent = current === undefined ? [] : items.filter((i) => !supportsLevel(i, current))
-
-    if (blocksCurrent.length > 0) {
-      // The value in the *file* is the dangerous one: DSH applies it to every request on the
-      // route (`options.reasoningEffort ?? profile.reasoning`), so those models fail with
-      // UNSUPPORTED_REASONING_EFFORT. Remove it to restore usability — it is re-added by
-      // itself once every model on the route supports a level again.
-      entry.action = 'remove-breaking'
-      entry.blockedBy = blocksCurrent.map((i) => i.model)
-      entry.why = `现有的 \`reasoning: ${current}\` 会被套用到该路由的**每个**模型，而 ${blocksCurrent.map(describe).join('、')}——这些模型的请求会以 UNSUPPORTED_REASONING_EFFORT 失败，因此移除它先把可用性恢复`
-    } else if (blocksTarget.length > 0) {
-      entry.action = current === undefined ? 'withheld' : 'keep-other'
-      entry.blockedBy = blocksTarget.map((i) => i.model)
-      entry.why =
-        current === undefined
-          ? `${blocksTarget.map(describe).join('、')}，因此不写入 ${defaultLevel}`
-          : `现有 \`reasoning: ${current}\` 对全路由都安全，保留；${blocksTarget.map(describe).join('、')}，因此不改写成 ${defaultLevel}`
-    } else if (current === defaultLevel) {
-      entry.why = `已经是 reasoning: ${defaultLevel}，且该路由每个模型都支持它`
-    } else if (current !== undefined) {
-      entry.action = doFix ? 'replace' : 'conflict'
-      entry.why = `路由已经写着 reasoning: ${current}`
-    } else {
-      entry.action = 'insert'
-    }
-    routeDefaults.push(entry)
+  if (current === undefined) {
+    entry.why = '没有路由级默认档（本技能不写入）：选择器显示"默认"，每个模型用网关自己的默认值'
+  } else {
+    // Support is checked, not assumed: a previous revision announced "already reasoning: high —
+    // nothing to do" without ever asking whether every model on the route offers it, so a route
+    // default that had just made a newly added model unusable sat in the file unreported.
+    entry.action = 'remove'
+    entry.blockedBy = items.filter((i) => !supportsLevel(i, current)).map((i) => i.model)
+    entry.why =
+      entry.blockedBy.length > 0
+        ? `现有的 \`reasoning: ${current}\` 会被套用到该路由的**每个**模型，而 ${items
+            .filter((i) => !supportsLevel(i, current))
+            .map(describe)
+            .join('、')}——这些模型的请求会以 UNSUPPORTED_REASONING_EFFORT 失败，因此移除它先把可用性恢复`
+        : `现有的 \`reasoning: ${current}\` 目前对全路由都安全，但仍然移除：路由级默认档会把选择器的默认档从"默认"改成 ${current}，并且下次往这条路由加一个不支持该档的模型时直接报错`
   }
+  routeDefaults.push(entry)
 }
 
-// `agent-default-model.reasoningEffort` is a *global* value: it applies to whatever model a
-// new session happens to start on, so it cannot be checked against one model and trusted. It
-// is also short-lived — the picker's own selection rewrites it, and picking any model that has
-// no `defaultEffort` clears it. So this writer does not create it; it only removes it when it
-// can prove the configured default model does not offer the value.
+// `agent-default-model.reasoningEffort` is a *global* value: it applies to whatever model a new
+// session happens to start on, so it cannot be checked against one model and trusted. It is also
+// the picker's own field — selecting a model or a level rewrites it. So this writer does not
+// create it and does not clear a choice the user made; it removes the value only when it can prove
+// the configured default model does not offer it, which would fail the first request of every new
+// session.
 const agentDefault = { action: 'none', why: undefined }
-if (wantDefault) {
+{
   const section = doc?.['agent-default-model']
   const current = section?.reasoningEffort
   if (section === undefined) agentDefault.why = 'settings 里没有 `agent-default-model` 段'
-  else if (current === undefined) agentDefault.why = '未设置（不主动写入：它是全局值，选择器一换模型就可能失效；路由级默认已提供等价效果）'
+  else if (current === undefined) agentDefault.why = '未设置（不主动写入：它是全局值，只作用于新建会话，选择器一换模型就会改写它）'
   else {
     const item = plan.find((i) => i.route === section.provider && i.model === section.model)
     if (item === undefined) agentDefault.why = `\`${current}\` 保留：默认模型 \`${section.provider}/${section.model}\` 不在自定义路由上，无法证明它不支持该档`
@@ -807,33 +803,20 @@ function buildReport() {
     out.push('')
   }
 
-  if (wantDefault) {
-    out.push('## 默认档位（消除选择器里的 "Default"）')
-    out.push('')
-    out.push(`目标档位：**${defaultLevel}**（\`--default-effort <level>\` 可改，\`--default-effort skip\` 关闭本节的全部写入）。`)
-    out.push('')
-    out.push('路由级 `reasoning:` 是 `defaultEffort` 的唯一来源，而选择器只在 `defaultEffort === undefined` 时才插入 "Default" 项——写上它，既去掉"默认"，也把默认值定成目标档。代价是它作用于该路由的**每个**模型，遇到不支持该档的模型时请求会直接报 `UNSUPPORTED_REASONING_EFFORT`，所以只在全路由都支持时才写。')
-    out.push('')
-    for (const entry of routeDefaults) {
-      const mark =
-        entry.action === 'insert' ? '**写入**'
-        : entry.action === 'replace' ? '**改写**（--fix）'
-        : entry.action === 'remove-breaking' ? '**移除（修复）**'
-        : entry.action === 'withheld' ? '**未写**'
-        : entry.action === 'keep-other' ? '保留现有值'
-        : entry.action === 'conflict' ? '冲突（加 `--fix`）'
-        : '无需改动'
-      out.push(`- \`${entry.route}\`：${mark}${entry.why === undefined ? '' : ` —— ${entry.why}`}`)
-    }
-    const agentMark =
-      agentDefault.action === 'none' ? '无需改动'
-      : agentDefault.action === 'remove-unsafe' ? '**移除（修复）**'
-      : agentDefault.action === 'insert' ? '**写入**'
-      : agentDefault.action === 'replace' ? '**改写**（--fix）'
-      : '冲突（加 `--fix`）'
-    out.push(`- \`agent-default-model.reasoningEffort\`（**新建**会话的默认档位）：${agentMark}${agentDefault.why === undefined ? '' : ` —— ${agentDefault.why}`}`)
-    out.push('')
+  out.push('## 默认档位（路由级 `reasoning:` 一律不保留）')
+  out.push('')
+  out.push('DSH 里唯一能固定默认档的是**路由级** `reasoning:`，而它会被套用到该路由的**每个**模型——遇到不支持该档的模型（含非推理模型），请求直接以 `UNSUPPORTED_REASONING_EFFORT` 失败。所以本技能不写入它，并且在发现时移除它：默认档保持"默认"，由网关自己决定，这是每个模型都能接受的取值。')
+  out.push('')
+  for (const entry of routeDefaults) {
+    const mark = entry.action === 'remove' ? '**移除**' : '无需改动'
+    out.push(`- \`${entry.route}\`：${mark}${entry.why === undefined ? '' : ` —— ${entry.why}`}`)
   }
+  const agentMark =
+    agentDefault.action === 'none' ? '无需改动'
+    : agentDefault.action === 'remove-unsafe' ? '**移除（修复）**'
+    : '冲突（加 `--fix`）'
+  out.push(`- \`agent-default-model.reasoningEffort\`（**新建**会话的初始档位，选择器自己会写它）：${agentMark}${agentDefault.why === undefined ? '' : ` —— ${agentDefault.why}`}`)
+  out.push('')
 
   if (undecided.length > 0) {
     out.push('## 需要你决定 —— 技能不会替你猜')
@@ -909,7 +892,7 @@ function buildReport() {
   out.push('')
   if (verdict === 'covered') {
     out.push(`- 结论 **covered**：范围内的自定义路由上，每个模型都有显式声明${scope === 'partial' ? '（部分模式）' : ''}。`)
-    out.push('- 刷新页面（或在 `/model` 选择器里重新选一次模型）后在 **Effort** 面板确认：没有 `Default` 项、预选 High。')
+    out.push('- 刷新页面（或在 `/model` 选择器里重新选一次模型）后在 **Effort** 面板确认：推理模型里有一项 **默认** 且预选它；非推理模型没有任何档位可选项。')
     out.push('- 档位"被列出"不等于"被兑现"：`--probe` 能确认网关接受该取值，但**不能**证明思考深度真的变了。')
   } else if (verdict === 'blocked') {
     out.push('- 结论 **blocked**：有写入被拒绝或校验失败，文档未被改动。先按上面的 ❌ 信息修环境，再重跑同一命令。')
@@ -969,21 +952,22 @@ if (doApply) {
     else if (!result.unchanged) failures.push(`\`${item.model}\`：${result.reason}`)
   }
 
-  // Route-level default: this is what removes the picker's "Default" entry, and its removal is
-  // the one repair this skill performs — a value applied to every model on the route must not
-  // break any of them.
+  // Route-level default: the one field this skill removes rather than writes. It is applied to
+  // every model on the route, so leaving the wrong value behind breaks requests that have nothing
+  // to do with the model that was just added.
   for (const entry of routeDefaults) {
-    if (entry.action === 'insert' || entry.action === 'replace') {
-      const written = upsertRouteScalar(text, entry.route, 'reasoning', entry.level)
-      if (written.text !== undefined) text = written.text
-      if (written.changed) applied.push(`路线 \`${entry.route}\` 写入 \`reasoning: ${entry.level}\`（选择器不再出现 "Default"）`)
-      else if (!written.unchanged) failures.push(`\`${entry.route}\` 路由默认档位：${written.reason}`)
-    } else if (entry.action === 'remove-breaking') {
-      const removed = removeRouteScalar(text, entry.route, 'reasoning')
-      if (removed.text !== undefined) text = removed.text
-      if (removed.changed) applied.push(`路线 \`${entry.route}\` 移除 \`reasoning: ${entry.current}\`（它会让 ${entry.blockedBy.join('、')} 的请求报错，先把可用性恢复）`)
-      else if (!removed.unchanged) failures.push(`\`${entry.route}\` 移除路由默认：${removed.reason}`)
-    }
+    if (entry.action !== 'remove') continue
+    const removed = removeRouteScalar(text, entry.route, 'reasoning')
+    if (removed.text !== undefined) text = removed.text
+    if (removed.changed) {
+      applied.push(
+        `路线 \`${entry.route}\` 移除 \`reasoning: ${entry.current}\`（${
+          entry.blockedBy.length > 0
+            ? `它会让 ${entry.blockedBy.join('、')} 的请求报错，先恢复可用性`
+            : '路由级默认档一律不保留，默认档回到"默认"'
+        }）`,
+      )
+    } else if (!removed.unchanged) failures.push(`\`${entry.route}\` 移除路由默认：${removed.reason}`)
   }
   if (agentDefault.action === 'remove-unsafe') {
     const removed = removeNamespaceScalar(text, 'agent-default-model', 'reasoningEffort')
@@ -1053,12 +1037,9 @@ if (text !== original) {
     }
     for (const entry of routeDefaults) {
       if (!validation.ok) break
+      if (entry.action !== 'remove') continue
       const got = validation.doc?.['llm-pi-ai']?.providers?.[entry.route]?.reasoning
-      if (entry.action === 'insert' || entry.action === 'replace') {
-        if (got !== entry.level) validation = { ok: false, reason: `校验失败：\`${entry.route}\` 的 reasoning 读回为 ${String(got)}` }
-      } else if (entry.action === 'remove-breaking') {
-        if (got !== undefined) validation = { ok: false, reason: `校验失败：\`${entry.route}\` 的 reasoning 未被移除（读回 ${String(got)}）` }
-      }
+      if (got !== undefined) validation = { ok: false, reason: `校验失败：\`${entry.route}\` 的 reasoning 未被移除（读回 ${String(got)}）` }
     }
     if (validation.ok && agentDefault.action === 'remove-unsafe') {
       const got = validation.doc?.['agent-default-model']?.reasoningEffort
@@ -1078,7 +1059,7 @@ if (doApply && text !== original && validation.ok) {
 // ---------------------------------------------------------------------- verdict
 // One machine-readable conclusion, so an agent does not have to interpret a report. The
 // exit code follows it exactly: 0 only for `covered`, which means every model on every
-// custom route in scope has an explicit declaration *and* no route default was withheld.
+// custom route in scope has an explicit declaration *and* no route-level default is left.
 const scope = onlyRoutes.size === 0 ? 'all' : 'partial'
 const coverage = routes
   .filter((r) => !catalogProviderIds.has(r.id))
@@ -1092,14 +1073,12 @@ const coverage = routes
       undecided: items.filter((i) => i.action === 'needs-decision').length,
     }
   })
-// A route whose models disagree about levels cannot carry a route default at all — DSH applies
-// that field to every model on the route and throws for a model that does not offer the level.
-// That is a permanent property of such a route, not a pending task, so it is *reported* (in the
-// default-effort section and in `routeDefaultsUnmet`) without keeping the exit code non-zero
-// forever. What it costs is stated where the user will see it: those models keep a "Default" row.
-const unmetDefaults = routeDefaults.filter((e) => e.action === 'withheld' || e.action === 'remove-breaking' || e.action === 'keep-other')
-const defaultWrites = routeDefaults.filter((e) => e.action === 'insert' || e.action === 'replace')
-const pendingWork = actions.length > 0 || conflicts.length > 0 || defaultWrites.length > 0
+// A route-level default in the document is unfinished work, always: it is a value applied to every
+// model on the route, so it has to come out before the document can be called covered. It is
+// *reported* as a removal rather than as a permanent condition, and the exit code carries it, so a
+// dry run cannot be mistaken for "nothing to do".
+const routeDefaultRemovals = routeDefaults.filter((e) => e.action === 'remove')
+const pendingWork = actions.length > 0 || conflicts.length > 0 || routeDefaultRemovals.length > 0
 
 let verdict
 if (failures.length > 0 || !validation.ok) verdict = 'blocked'
@@ -1152,7 +1131,8 @@ if (asJson) {
     nextAction,
     commands,
     coverage,
-    routeDefaultsUnmet: unmetDefaults.map((e) => ({ route: e.route, action: e.action, blockedBy: e.blockedBy, why: e.why })),
+    routeDefaults: routeDefaults.map((e) => ({ route: e.route, current: e.current, action: e.action, blockedBy: e.blockedBy, why: e.why })),
+    agentDefault: { action: agentDefault.action, why: agentDefault.why },
     plan,
     moves: moves.map((m) => ({ route: m.route, model: m.model, catalogApi: m.catalogApi, routeApi: m.routeApi })),
     readOnly,

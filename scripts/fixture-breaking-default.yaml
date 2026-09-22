@@ -6,11 +6,10 @@
 # catalog entry and no declaration, so it offers nothing at all — the route default alone makes
 # every request to it fail.
 #
-# What makes this fixture the important one: the value in the file already equals the level the
-# writer would otherwise choose, so a check order of "does the value match?" before "does every
-# model support it?" concludes "already correct, nothing to do" and leaves the breakage in
-# place. The writer must remove it instead — and it must come back on its own once every model
-# on the route supports a level again.
+# What makes this fixture the important one: a check order of "does the value already look right?"
+# before "does every model on the route support it?" concludes "nothing to do" and leaves the
+# breakage in place, which is how the value survived in the first place. The writer removes it —
+# it never keeps a route default — and says which models the value was breaking.
 llm-pi-ai:
   providers:
     mixed-route:

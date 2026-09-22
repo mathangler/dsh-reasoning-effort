@@ -30,9 +30,11 @@ model's real level set from the catalog DSH ships, writes it as a per-model
    all 40 pi-ai catalog provider ids, and any other `llm-*` namespace. It is the *route
    name* that decides, not the vendor: a route called `my-gemini` is custom, a route called
    `google` is the built-in.
-5. **No "Default".** A reasoning model is given the route-level `reasoning: high`
-   (configurable) so the picker drops its "Default" row and pins the level — plus
-   `agent-default-model.reasoningEffort: high` for new sessions.
+5. **No route default, on purpose.** The route-level `reasoning:` field is *never* written and is
+   removed when it is found: it applies to every model on the route, so leaving it there pins the
+   picker away from `Default` and breaks the route the moment a model that lacks the level is
+   added. Each model therefore keeps the gateway's own default — "默认" in the picker — which is
+   the one selection every model on the route can accept.
 6. **One pass.** A single `--apply` covers new providers, new models, changed models and
    deleted models. It is idempotent and additive: it fills gaps and never rewrites a
    declaration that is already there.
@@ -66,8 +68,8 @@ What makes that hold:
   shell redirection, no `VAR=$(...)`.
 
 `SKILL.md` is the execution path — about one page, with no internals in it. `REFERENCE.md` holds
-the mechanisms behind it (the catalog-by-route-name rule, the protocol table, the "Default" row,
-the evidence tiers) and is read only when the user asks why.
+the mechanisms behind it (the catalog-by-route-name rule, the protocol table, why no route default
+is ever written, the evidence tiers) and is read only when the user asks why.
 
 ## Install
 
@@ -202,10 +204,10 @@ Remove-Item -Recurse -Force "$env:USERPROFILE\.dsh\skills\dsh-reasoning-effort"
 For a project-scoped install, delete `<project>/.dsh/skills/dsh-reasoning-effort` the same
 way.
 
-**Uninstalling the skill does not undo its edits.** The `reasoningEfforts` declarations and
-the route-level `reasoning:` values stay in `settings.yaml` — they are ordinary
-configuration, not something the skill injects at runtime. Run `--restore latest` *before*
-removing the directory (see [Rollback](#rollback)), or delete the declarations by hand.
+**Uninstalling the skill does not undo its edits.** The `reasoningEfforts` declarations and the
+removal of a route-level `reasoning:` stay in `settings.yaml` — they are ordinary configuration,
+not something the skill injects at runtime. Run `--restore latest` *before* removing the directory
+(see [Rollback](#rollback)), or delete the declarations by hand.
 
 ### Where DSH looks for skills
 
@@ -237,9 +239,9 @@ node scripts/apply-reasoning-efforts.mjs --self-test   # exit 0 = this build beh
 node scripts/apply-reasoning-efforts.mjs --apply       # the whole job
 ```
 
-It scans every custom route, inserts what is missing, writes the route default, backs the
-document up first, validates the result path by path, and reports. Two things can remain,
-and neither is a silent failure:
+It scans every custom route, inserts what is missing, removes a route-level default it finds,
+backs the document up first, validates the result path by path, and reports. Two things can
+remain, and neither is a silent failure:
 
 | Left over | Why | What the run does |
 | --- | --- | --- |
@@ -256,7 +258,9 @@ llm-pi-ai:
     my-gateway:                       # a custom route: the key is not a catalog provider id
       baseURL: https://…
       api: openai-completions
-      reasoning: high                 # → defaultEffort: removes the picker's "Default" row
+      # no `reasoning:` here, ever: it is route-wide, and one model without that level
+      # (a non-reasoning model included) would fail every request with
+      # UNSUPPORTED_REASONING_EFFORT. The picker's "默认" row is the intended state.
       models:
         - id: glm-5.3
           reasoningEfforts:           # the levels this model really has — no `off`, it is
@@ -266,27 +270,25 @@ llm-pi-ai:
         - id: a-model-that-does-not-reason
           reasoningEfforts: false     # explicit, never merely absent
 agent-default-model:
-  reasoningEffort: high               # written by hand or by the GUI, never by this skill
+  reasoningEffort: high               # the picker's field for new sessions: written by the GUI,
+                                      # removed by this skill only if the default model cannot take it
 ```
 
 Built-in routes and the `llm-deepseek` namespace are listed read-only and never written.
 
 ### Two rules about the defaults, both learned the hard way
 
-- **A route default is applied to every model on the route**, and DSH throws
+- **A route-level `reasoning:` is applied to every model on the route**, and DSH throws
   `UNSUPPORTED_REASONING_EFFORT` for a model that does not offer it — including a model that declares
-  no levels at all. So the writer **removes** a route default as soon as one model on the route cannot
-  accept it, and re-adds it once every model can again. That removal is the only destructive change
-  this skill ever makes, and the report always names the model that caused it.
-- **`agent-default-model.reasoningEffort` is never written.** It is a global value applied to whatever
-  model a new session happens to start on, so it cannot be verified against one model and trusted — and
-  it is short-lived anyway, because the picker rewrites it and selecting a model with no `defaultEffort`
-  clears it. The writer only removes it, and only when it can prove the configured default model does
-  not offer the value.
-
-A route whose models disagree about levels therefore ends up with no default, and its models show a
-`Default` row again. That is reported in the `默认档位` section and in `routeDefaultsUnmet`; the way to
-get the no-Default behaviour back is to give the incompatible models their own route.
+  no levels at all and one that does not reason. So the writer never creates the field, and removes
+  it wherever it finds it, whether or not a model currently objects to it: keeping a *currently safe*
+  value would still pin the picker away from `Default` and re-arm the same failure for the next model
+  added through the GUI. With no route default, `Default` is what the picker shows — and that is the
+  point. A run cannot be `covered` while any custom route still carries the field.
+- **`agent-default-model.reasoningEffort` is never written.** It is the picker's own field — the
+  initial level for a *new* session, rewritten whenever you pick a model or a level — so the writer
+  does not clear a choice you made. It removes the value only when it can prove the configured
+  default model does not offer that level, which would fail the first request of every new session.
 
 ### The two data layers
 
@@ -316,7 +318,6 @@ node scripts/apply-reasoning-efforts.mjs --decide 'my-gateway/my-model=skip'    
 | `--apply` | write (backup → edit → re-parse → path-scoped diff → read-back → write) |
 | `--route <name>` | limit to a route (repeatable) |
 | `--fix` | also reconcile a declaration that contradicts the evidence |
-| `--default-effort <level\|skip>` | the level pinned as default (default `high`; `skip` disables those writes) |
 | `--probe` | allow **one** minimal live request per model, to record acceptance (it costs money) |
 | `--strict` | write only models whose evidence is a live probe |
 | `--fix-routes` | migrate a model whose catalog protocol differs from its route's — requires an explicit `--route`, because a gateway does not always follow its catalog and this can break a working route |
@@ -344,17 +345,19 @@ environment or the invocation is unusable.
 
 1. **Config resolves** — `node scripts/check-reasoning-route.mjs` reports no problems.
 2. **The picker offers what it should** — refresh the GUI and open the `/model` picker's
-   **Effort** pane: the `Default` row is gone, `High` is preselected, and each model shows
-   its real levels (a forced-thinking model has no `Off`).
+   **Effort** pane: a reasoning model lists exactly the levels the report gave it and comes up on
+   **默认**, and a model declared `false` has no effort pane at all.
 3. **The wire honours it** — `--probe` records whether the gateway accepted the value.
    Understand its limit: acceptance is not proof that thinking depth changed.
 
-To see every outcome (declare / ask / non-reasoning, plus the built-in boundary) without
-touching a real install:
+To see every outcome (declare / ask / non-reasoning, the built-in boundary, and the two kinds of
+route default) without touching a real install:
 
 ```sh
 node scripts/apply-reasoning-efforts.mjs --settings scripts/fixture-settings.yaml
 node scripts/apply-reasoning-efforts.mjs --settings scripts/fixture-builtin-settings.yaml
+node scripts/apply-reasoning-efforts.mjs --settings scripts/fixture-breaking-default.yaml
+node scripts/apply-reasoning-efforts.mjs --settings scripts/fixture-pinned-default.yaml
 ```
 
 ## Rollback
@@ -375,11 +378,12 @@ previous behaviour returns without disturbing the rest of the route. Pass
 - **A published endpoint table is not authoritative.** A gateway documenting `/responses`
   as serving only some models served 64 consecutive turns of a different model on that
   path, with no errors. Protocol differences are reported as notices, never acted on.
-- **A route default is route-scoped.** The config schema has no per-model default, so a
-  model on the route that does not support the pinned level keeps its `Default` row and
-  fails if the route default is applied to it. The writer therefore writes the default only
-  when *every* model on the route declares the level, and reports the route as not-written
-  otherwise.
+- **A route default is route-scoped.** The config schema has no per-model default, so the field
+  applies to every model on the route: one model that does not offer the level — including a
+  non-reasoning model — fails with `UNSUPPORTED_REASONING_EFFORT`, and the picker's `Default` row
+  disappears for all of them. That is why the writer never writes it and always removes it. If you
+  *want* a pinned default, set it by hand and accept that the next model you add through the GUI can
+  break the route; the skill will report and remove it on its next run.
 - **`anthropic-messages` maps levels to a thinking budget**, not to an effort string, so a
   declared map's values are inert there — the level set is the part that matters.
 - **A dynamic Cordis plugin cannot write settings** (realm-sensitive `isPlainObject`). Read

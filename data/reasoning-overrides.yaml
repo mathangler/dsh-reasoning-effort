@@ -10,6 +10,10 @@
 #   * `efforts` must use DSH's seven level names, and only `off` may be null;
 #   * never guess. If neither the catalog nor a vendor page says it, leave the
 #     model out — the writer then reports it as unknown and changes nothing.
+#   * `match` names the model plus the gateway (`baseURL`) the fact is about. Scope the
+#     entry to one route (`provider`) only when two routes to the same gateway genuinely
+#     differ — the same model served by the same gateway has one answer, and a route name
+#     is a label the user is free to change.
 #
 # evidence: probe > vendor > catalog > unknown  (see scripts/lib/capability.mjs)
 version: 1
@@ -41,7 +45,7 @@ entries:
     source: https://api-docs.deepseek.com/quick_start/pricing
     note: Same family as deepseek-v4-flash; vendor-documented thinking controls.
   - match:
-      provider: opencode-go-0
+      baseURL: https://opencode.ai/zen/go/v1
       model: mimo-v2.6-flash
     decidedAt: '2026-09-22'
     evidence: vendor
@@ -49,7 +53,7 @@ entries:
     reasoning: false
     note: 'vendor decision: non-reasoning model'
   - match:
-      provider: opencode-go-0
+      baseURL: https://opencode.ai/zen/go/v1
       model: mimo-v2.6-pro
     decidedAt: '2026-09-22'
     evidence: vendor

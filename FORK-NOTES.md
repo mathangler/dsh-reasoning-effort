@@ -10,6 +10,29 @@ git diff 541bad4 HEAD --stat
 git diff 541bad4 HEAD -- SKILL.md
 ```
 
+## Revision 2: the route default is never written
+
+Same contract version (1), one behavioural reversal, and one piece of machinery that was built,
+reviewed and then removed. The trigger was real: a model added through the GUI on a route that
+already carried `reasoning: high` made every request to that model fail with
+`UNSUPPORTED_REASONING_EFFORT`, because the route default is applied to the whole route.
+
+| Area | Revision 1 | Now |
+| --- | --- | --- |
+| Route-level `reasoning:` | written as `high` when every model on the route declares it, so the picker drops its `Default` row | **never written**, and **removed wherever it is found**, whether or not a model currently objects to it. `Default` is the intended state: it is the one selection every model on the route can accept |
+| Pinning a default | `--default-effort <level\|skip>` (default `high`) | the flag is gone; a route default is no longer a feature |
+| A model that cannot take the route default | withheld the write, or removed a value already in the file | removed, always — and a route still carrying the field keeps the run out of `covered` |
+| Per-model default rule | "give the incompatible models a route of their own" (`--no-default` split, reference retargeting, evidence remapping) | **removed in full**: the split, `retargetProviderForModels`, the reference retargeting and the evidence remapping. Routes are never renamed or split, so `agent-default-model` / `subagent-model-selection` never have to be re-pointed and no recorded evidence has to follow a model |
+| Evidence scope | keyed by route name (`match.provider`) | keyed by **gateway** (`match.baseURL`) for the vendor facts, because the fact is about the model as that gateway serves it: two routes to the same gateway now share one answer instead of putting the same question to the user twice. `match.provider` still works, for routes that genuinely differ |
+| `agent-default-model.reasoningEffort` | removed only when provably unsupported | unchanged |
+| `--json` | `routeDefaultsUnmet` (only the entries that were not written) | `routeDefaults` (every route, with `action`), plus `agentDefault` |
+| Fixtures | three | four: `fixture-pinned-default.yaml` adds the *safe* route default, which must come out as well, and is the one fixture that reaches exit `0` |
+
+The environment that produced this: 39 catalog providers, two `llm-*` routes to one gateway (one
+`openai-responses`, one `openai-completions`), and a model that appears on both. The self-test is
+the gate — it asserts both defaults rules, the built-in boundary, and the exit code for a fully
+covered document.
+
 ## Why this revision exists
 
 The previous revision is **documentation plus a read-only validator**: its entire
@@ -66,7 +89,7 @@ SKILL.md, then run the validator". That left three gaps:
 | `scripts/apply-reasoning-efforts.mjs` | the writer, plus `--self-test`, `--decide`, `--json` |
 | `scripts/check-reasoning-route.mjs` | the read-only validator |
 | `scripts/lib/` | install discovery, catalog and level rules, the line-level YAML editor |
-| `scripts/fixture*.yaml` | three fixtures the self-test drives: declare/ask/non-reasoning, the built-in boundary, and a breaking route default |
+| `scripts/fixture*.yaml` | four fixtures the self-test drives: declare/ask/non-reasoning, the built-in boundary, a route default that breaks a model, and a route default that breaks nothing (both must be removed) |
 | `scripts/install-from-github.mjs`, `scripts/publish-via-api.mjs` | the API fallbacks for environments where git cannot reach github.com |
 | `scripts/live-probe.md` | upstream, untouched |
 

@@ -101,7 +101,7 @@ Two consequences worth stating plainly:
   session header.** Decide the protocol by the session-header column first, then express effort
   within it. Both protocols accept the same `reasoningEfforts` declaration.
 
-## The "Default" row
+## The "Default" row (and why no route default is ever written)
 
 DSH's picker offers a `Default` entry exactly when the model reports reasoning metadata *and*
 no `defaultEffort` (`dsh-client-ui-model-selection/lib/client.js`):
@@ -125,36 +125,39 @@ function describableReasoningLevel(model, effort) {
 ...defaultLevel === void 0 ? {} : { defaultEffort: ReasoningEffortId(defaultLevel) }
 ```
 
-Two properties follow, and they are why the writer guards the write:
+Two properties follow:
 
 - it is **route-scoped** — the config schema has no per-model default (`modelFields` is
-  `name/contextWindow/maxTokens/input/reasoningEfforts/compat`), so one non-compliant model
-  forces the whole route to stay on Default;
-- a model on the route that does **not** support the level keeps its `Default` row, and the
-  adapter re-applies the route value at stream time
-  (`resolveReasoningLevel(model, options.reasoningEffort ?? profile.reasoning)`), so *using*
-  that model then fails with `UNSUPPORTED_REASONING_EFFORT`.
+  `name/contextWindow/maxTokens/input/reasoningEfforts/compat`), so one model that lacks the level
+  takes the whole route's default away with it;
+- the adapter re-applies it at stream time
+  (`resolveReasoningLevel(model, options.reasoningEffort ?? profile.reasoning)`), throwing
+  `UNSUPPORTED_REASONING_EFFORT` for any model on the route that does not offer the level.
+  `getSupportedThinkingLevels` returns `['off']` for a model that does not reason at all, so a
+  non-reasoning model cannot accept **any** route default.
 
-The writer therefore writes a route default only when **every** model on that route declares the
-level, and otherwise reports the route as not-written with the models that blocked it.
+Which makes a route default safe only with respect to *today's* model list: the next model added to
+that route — one move in the GUI — turns the same line into a failure for that model, on every
+request. That is why this skill never writes the field. `Default` **is** the intended state: it is
+the one selection every model on the route can accept, it leaves the thinking depth to the gateway's
+own default, and it keeps the picker honest about what the model actually offers.
 
-**A third property, and the one that bites in practice:** a route containing a model that declares
-no levels at all can never carry a route default. The support check runs against *that* model too —
-`getSupportedThinkingLevels` returns `['off']` for a non-reasoning model, so `high` is not in the
-list and the request throws. This is why the writer **removes** a route default the moment a model
-on the route stops supporting it: the removal is the repair that restores usability, and the default
-comes back on its own once every model on the route supports a level again. Keeping both properties
-— no `Default` row *and* a usable model — requires giving the incompatible models their own route.
-A route default is also the only thing this writer ever removes.
+The writer's only repair is therefore a **removal**:
 
-`agent-default-model.reasoningEffort` is deliberately never written: it is a global value applied to
-whatever model a new session starts on, so it cannot be verified against one model and trusted — and
-it is short-lived anyway, because the picker's own selection rewrites it and selecting a model with
-no `defaultEffort` clears it. The writer only removes it, and only when it can prove the configured
-default model does not offer the value.
+- present and breaking a model → removed, because every request to that model fails otherwise;
+- present and currently harmless → removed all the same, because keeping it would pin the picker
+  away from `Default` and re-arm exactly that failure for the next model added.
 
-`agent-default-model.reasoningEffort` is a separate, weaker knob: it is the initial selection for
-a **new** session. It does not retroactively change a session that has already logged a request.
+A route with no `reasoning:` is reported as nothing to do; a run cannot be `covered` while any
+custom route in scope still carries the field. It is visible as `routeDefaults` in `--json` and as
+默认档位 in the report.
+
+`agent-default-model.reasoningEffort` is a separate, weaker knob, and the picker's own field: the
+initial level for a **new** session, rewritten by the picker whenever the user picks a model or a
+level. The writer never writes it and never clears a choice the user made; it removes the value only
+when it can prove the configured default model does not offer that level — which would fail the first
+request of every new session. It does not retroactively change a session that has already logged a
+request.
 
 ## Evidence tiers
 
@@ -173,6 +176,14 @@ decision, and an entry that cannot cite one does not belong there. `--evidence v
 **A sibling attestation is evidence for a question, not a licence to write.** The same model
 served by another gateway can have different limits and a different wire vocabulary, which is why
 the writer reports sibling candidates but refuses to derive from them.
+
+**Scope a fact to the gateway, not to a route name.** An entry's `match` names the model plus either
+the gateway (`baseURL`) or a single route (`provider`). A cited vendor fact is about the model as
+that gateway serves it, so `baseURL` is the honest key: two routes pointing at the same gateway — two
+protocols, two API keys, one for Responses and one for Completions, which is an ordinary setup —
+then share the answer instead of putting the same question to the user twice, and renaming or
+recreating a route cannot orphan it. `provider` is for the narrower case where two routes to the same
+gateway genuinely differ.
 
 ## The public endpoint table is not authoritative
 

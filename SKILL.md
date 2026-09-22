@@ -1,14 +1,16 @@
 ---
 name: dsh-reasoning-effort
-description: Give every model on a custom (hand-declared) DSH provider route the thinking / reasoning-effort levels it actually has — a `reasoningEfforts` map for models that reason, an explicit `false` for those that do not, and a route-level default so the picker stops offering "Default". Built-in providers are never touched; a model nothing can source is researched and then put to the user as a question instead of being guessed at. Use when a model menu shows no 推理等级 / effort submenu, when a level returns UNSUPPORTED_REASONING_EFFORT, when models were added under `llm-pi-ai.providers` in settings.yaml, or when the user asks 怎么调思考等级 / 调整思考强度 / 加推理等级 / reasoning effort / thinking budget.
+description: Give every model on a custom (hand-declared) DSH provider route the thinking / reasoning-effort levels it actually has — a `reasoningEfforts` map for models that reason, an explicit `false` for those that do not, and no route-level default, so each model keeps the gateway's own default ("默认"). Built-in providers are never touched; a model nothing can source is researched and then put to the user as a question instead of being guessed at. Use when a model menu shows no 推理等级 / effort submenu, when a level returns UNSUPPORTED_REASONING_EFFORT, when models were added under `llm-pi-ai.providers` in settings.yaml, or when the user asks 怎么调思考等级 / 调整思考强度 / 加推理等级 / reasoning effort / thinking budget.
 disable-model-invocation: true
 ---
 
 # dsh-reasoning-effort
 
 Every model on a hand-declared `llm-pi-ai.providers` route gets an explicit reasoning-effort
-declaration, so the picker offers real levels instead of a "Default" row. Built-in providers
-are never written. A model nothing can source is researched, then asked about — never guessed.
+declaration, so the picker offers the levels the model really has. No route-level default is
+ever written: each model keeps the gateway's own default ("默认"), which is the one value every
+model can accept. Built-in providers are never written. A model nothing can source is researched,
+then asked about — never guessed.
 
 **Contract version 1.** If a script prints a different `contract` number, stop and tell the
 user to reinstall: the files on disk do not match this document.
@@ -58,8 +60,9 @@ node $SKILL/scripts/check-reasoning-route.mjs --json
 `problems` must be `[]`. Anything else is a finding to report, not to fix by hand.
 
 **5. Report.** Quote the tool's `verdict` verbatim, list `coverage` per route, and name every
-model still undecided. Then tell the user to open the `/model` picker's **Effort** pane: the
-`Default` row should be gone and `High` preselected.
+model still undecided. Then tell the user to open the `/model` picker's **Effort** pane: a
+reasoning model lists exactly the levels `coverage` reports and comes up on **默认**, and a model
+declared `false` has no effort pane at all.
 
 ## Never
 
@@ -69,7 +72,7 @@ model still undecided. Then tell the user to open the `/model` picker's **Effort
 - Never write to a route whose name is a pi-ai catalog id, or to `llm-deepseek`. Those are
   built-ins — the tool refuses anyway, so do not spend a turn trying.
 - Never use these on your own initiative; they exist for the human: `--fix`, `--fix-routes`,
-  `--restore`, `--probe`, `--strict`, `--dsh-root`, `--default-effort`.
+  `--restore`, `--probe`, `--strict`, `--dsh-root`.
 - Never pass a flag that is not in `--help`. Unknown flags exit `2` by design; if you saw
   that error, fix your command rather than working around it.
 - Never report success without step 4, and never report success while `verdict` is anything
@@ -86,12 +89,16 @@ model still undecided. Then tell the user to open the `/model` picker's **Effort
   there (that needs `--fix`, which is the user's call).
 - `--route` narrows the run to one route; the tool then reports `scope: partial`, and `exit 0`
   only means *those* routes are covered. Only use it when the user asks about one route.
-- A route-level default is applied to **every** model on the route, so the writer removes one that
-  a model cannot accept — that is the single repair it performs, and it re-adds the default once
-  every model supports a level again. Never put it back by hand.
-- Some routes can never carry a default: if any model on the route declares no levels at all, DSH
-  would throw for that model. The report says so under 默认档位 and `routeDefaultsUnmet`; the fix
-  is to give those models their own route, and that is the user's call, not yours.
+- A route-level `reasoning:` is **never** written, and is removed whenever it is present — whether
+  or not a model currently objects to it. DSH applies that value to every model on the route, so
+  one model without that level (a non-reasoning model included) fails every request with
+  `UNSUPPORTED_REASONING_EFFORT`. That removal is the only repair the writer performs; never put
+  the field back by hand, and never "fix" a route by giving models a route of their own.
+- `agent-default-model.reasoningEffort` is the picker's own field — the level a *new* session
+  starts on, and the user's choice. The writer leaves it alone unless it can prove the configured
+  default model does not offer that level, which would fail the first request of every new session.
+- With no route default, `Default` is what the picker shows, and that is the intended state: it is
+  the only selection every model on the route can accept.
 
 ## When the user asks "why"
 

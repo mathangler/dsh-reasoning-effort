@@ -258,10 +258,9 @@ export function appendModelItem(text, routeId, blockLines) {
   const route = locateRoute(lines, routeId)
   if (route === undefined) return { changed: false, reason: `route "${routeId}" not found` }
   if (route.models === undefined) return { changed: false, reason: `route "${routeId}" has no "models" list` }
-  const indent = childIndentOf(lines, route.models.keyLine + 1, route.models.end)
-  if (indent === undefined) return { changed: false, reason: `route "${routeId}" has an empty "models" list` }
+  const indent = childIndentOf(lines, route.models.keyLine + 1, route.models.end) ?? route.models.indent + 2
   const at = trimTrailingBlank(lines, route.models.keyLine + 1, route.models.end)
-  lines.splice(at, 0, ...blockLines.map((line) => ' '.repeat(indent) + line.trimStart()))
+  lines.splice(at, 0, ...reindent(blockLines, indent))
   return { changed: true, text: joinText(parts) }
 }
 
@@ -288,7 +287,7 @@ export function createRoute(text, routeId, { api, baseURL, apiKeyEnv, displayNam
   if (baseURL !== undefined) fields.push(`${inner}baseURL: ${baseURL}`)
   if (api !== undefined) fields.push(`${inner}api: ${api}`)
   const block = [`${pad}${routeId}:`, ...fields, `${inner}models:`]
-  for (const line of modelBlock) block.push(`${modelIndent}${line.trimStart()}`)
+  for (const line of reindent(modelBlock, modelIndent)) block.push(line)
 
   const at = trimTrailingBlank(lines, providers.keyLine + 1, providers.end)
   lines.splice(at, 0, ...block)
@@ -298,9 +297,12 @@ export function createRoute(text, routeId, { api, baseURL, apiKeyEnv, displayNam
 /**
  * Set a scalar field belonging to a route block, e.g. `reasoning: high`.
  *
- * This is the only knob that produces a `defaultEffort`, and a defined
- * `defaultEffort` is what removes the picker's "Default" entry — see SKILL.md.
- * It is inserted before `models:` so the route still reads top-down.
+ * `reasoning` is the only field of this kind today, and it is the one the writer
+ * refuses to create (it is route-wide and breaks every model that lacks the level),
+ * so nothing calls this any more. It stays for the case where a person has decided
+ * they want a pinned route default: `upsertRouteScalar(text, route, 'reasoning',
+ * 'high')`. `removeRouteScalar` is the direction the skill actually uses.
+ * Inserted before `models:` so the route still reads top-down.
  */
 export function upsertRouteScalar(text, routeId, key, value) {
   const parts = splitText(text)
@@ -384,6 +386,25 @@ function removeChildScalar(parts, blockStart, blockStop, indent, key) {
     return { changed: true, text: joinText(parts), action: 'removed' }
   }
   return { changed: false, reason: `${key} is not set`, unchanged: true }
+}
+
+/**
+ * Re-anchor a block of lines to a new first-line indent, keeping the relative indentation of
+ * everything under it. Flattening each line with `trimStart()` first would drop a sequence item's
+ * fields onto the dash line, which YAML reads as a bad mapping entry.
+ */
+export function reindent(blockLines, indent) {
+  if (blockLines.length === 0) return []
+  const first = blockLines[0]
+  const base = first.length - first.trimStart().length
+  const delta = indent - base
+  if (delta === 0) return [...blockLines]
+  return blockLines.map((line) => {
+    if (line.trim().length === 0) return line
+    if (delta > 0) return ' '.repeat(delta) + line
+    const leading = line.length - line.trimStart().length
+    return line.slice(Math.min(-delta, leading))
+  })
 }
 
 /** Every route under `llm-pi-ai.providers`, as `{ id, api, baseURL, modelIds }`. */
