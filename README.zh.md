@@ -221,11 +221,38 @@ node scripts/apply-reasoning-efforts.mjs --apply       # 全部工作
 
 ## 配置
 
+### 两种发行版：桌面版 与 npm/CLI 版
+
+DSH 现在有两个发行版，**它们共用同一个 `$DSH_HOME`（`~/.dsh`）与同一个技能根**，所以本技能装一次两边都能用；
+不同的只是**各自的 profile**：
+
+| | 桌面版 | npm/CLI 版 |
+| --- | --- | --- |
+| profile | `desktop`（由桌面应用创建并使用） | `web`（常驻服务）/ `headless`（一次性运行） |
+| 提供方所在文档 | `profiles/desktop/cordis.patch.yml` | `profiles/web/cordis.patch.yml` |
+| 技能根 | `$DSH_HOME/skills` | 同一个 |
+
+技能**自动识别**自己在哪个版本里运行：DSH 会给它启动的每条命令注入 `DSH_PROFILE_DIR` / `DSH_PROFILE`，
+运行结果里会写出 `distribution`（`desktop 版` 或 `npm/CLI 版`），并且只改**当前这个版本**的那份补丁——
+不会在桌面版里去改 CLI 的配置，反之亦然。若当前 profile 里还没有 `llm-pi-ai` 条目，它会明说并列出另一个发行版的位置，
+而不是偷偷改过去。只有在**普通终端**（没有 DSH 环境变量）里、且不止一个候选时，才需要你用 `--settings <路径>` 指定。
+
+**桌面版自带 Node**，而机器上的 `node` 可能根本跑不起来（例如 nvm 没有激活任何版本）。这时用技能自带的包装脚本：
+
+```sh
+scripts/run-apply.cmd --apply      # Windows：跑写入器
+scripts/run-apply.sh  --apply      # macOS / Linux
+scripts/run-check.cmd|sh           # 只读校验器，同一套解析顺序
+```
+
+解析顺序：`$DSH_SKILL_NODE` → PATH 上的 `node`（**实际执行**验证，而不是只看是否存在）→ 桌面版自己的可执行文件
+（`DSH_DESKTOP_NODE_EXECUTABLE`）→ 桌面版自带的 Node 发行版 → 都不行则退出 `2` 并列出尝试过的路径。
+
 ### 它写进哪个文件、写成什么
 
 目标文档是 **profile 补丁**：`$DSH_HOME/profiles/<profile>/cordis.patch.yml`——DSH 0.1.7 之后设置就放在这里
-（旧的 `settings.yaml` 只在启动时被导入一次然后改名，之后再也不会被读取）。技能自己会找到这份补丁；
-机器上有多个 profile 时用 `--settings <路径>` 指定。
+（旧的 `settings.yaml` 只在启动时被导入一次然后改名，之后再也不会被读取）。技能自己会按上面那条规则找到这份补丁；
+只有在普通终端里、且有多个候选时才需要 `--settings <路径>`。
 
 ```yaml
 - id: llm-pi-ai
@@ -312,8 +339,10 @@ node scripts/apply-reasoning-efforts.mjs --decide 'my-gateway/my-model=skip'    
 | 变量 | 含义 |
 | --- | --- |
 | `DSH_HOME` | DSH 主目录（默认 `~/.dsh`）——`profiles/`（各 profile 补丁）与原生技能根都在这里 |
+| `DSH_PROFILE` / `DSH_PROFILE_DIR` | 当前会话运行在哪个 profile（桌面版是 `desktop`，CLI 是 `web`/`headless`）。技能据此决定改哪份补丁，**由 DSH 自动注入**，不用你设 |
 | `DSH_AGENTS_HOME` | 共用的用户技能根（默认 `~/.agents`） |
 | `DSH_ROOT` | 含 `node_modules` 的 DSH 安装；`--dsh-root` 优先 |
+| `DSH_SKILL_NODE` | 只给 `run-apply.*` / `run-check.*` 包装脚本用：指定一个可用的 node 可执行文件（优先级最高） |
 | `DSH_NO_SUBPROCESS=1` | 安装发现时跳过 `where`/`which` 兜底 |
 
 ## 验证

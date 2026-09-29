@@ -75,11 +75,12 @@ if (has('--help') || has('-h')) {
   console.log(`usage: node check-reasoning-route.mjs [--route <name>] [--settings <path>] [--dsh-root <path>] [--json]
 
   --route     only report this route (default: every route in the llm-pi-ai row's providers)
-  --settings  the profile patch to read (default: the single profile patch that configures llm-pi-ai)
+  --settings  the profile patch to read (default: the profile this session runs under)
   --dsh-root  dsh install root holding node_modules (default: discovered)
   --json      machine-readable output
 
-Env: DSH_ROOT supplies the dsh root; DSH_NO_SUBPROCESS=1 skips the where/which fallback.`)
+Env: DSH_ROOT supplies the dsh root; DSH_NO_SUBPROCESS=1 skips the where/which fallback;
+     DSH_PROFILE_DIR / DSH_PROFILE name the profile this session runs under (desktop vs CLI).`)
   process.exit(0)
 }
 
@@ -91,6 +92,16 @@ if (resolved.error !== undefined) {
   process.exit(2)
 }
 const settingsPath = resolved.target.path
+// Which distribution this document belongs to. The desktop app and the CLI each run their own
+// profile, so the file is decided by the profile the session runs under (`DSH_PROFILE_DIR`); this
+// is what the run says it found, nothing more.
+const flavor = {
+  kind: resolved.target.kind ?? 'unknown',
+  profile: resolved.target.profile,
+  label: resolved.target.label ?? (resolved.target.profile === undefined ? 'explicit --settings' : `profile "${resolved.target.profile}"`),
+  evidence: resolved.target.evidence,
+  desktopVersion: resolved.target.desktop?.version,
+}
 const wantRoute = flagValue('--route', undefined)
 
 const install = findInstall(flagValue('--dsh-root', undefined))
@@ -123,6 +134,7 @@ const routes = listRoutes(splitText(text).lines).filter((r) => wantRoute === und
 const report = {
   contract: CONTRACT,
   settings: settingsPath,
+  flavor,
   dsh: { root: install.label, version: dshVersion(install), piAiCatalog: catalog.providers.size, compatGates: gates.available },
   routes: [],
   problems: [],
@@ -259,6 +271,7 @@ if (has('--json')) {
   console.log(JSON.stringify({ ...report, deepseek: deepseekNote }, null, 2))
 } else {
   console.log(`profile patch: ${settingsPath}`)
+  console.log(`distribution : ${flavor.label}${flavor.desktopVersion === undefined ? '' : ` · Desktop ${flavor.desktopVersion}`}${flavor.evidence === undefined ? '' : ` — ${flavor.evidence}`}`)
   console.log(`contract    : ${CONTRACT} (SKILL.md states the contract it expects)`)
   console.log(`dsh install : ${install.label}${dshVersion(install) === undefined ? '' : ` (dsh ${dshVersion(install)})`}`)
   console.log(`pi-ai       : ${catalog.providers.size} catalog providers`)

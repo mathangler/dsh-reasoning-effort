@@ -252,12 +252,43 @@ remain, and neither is a silent failure:
 
 ## Configure
 
+### Two distributions: the desktop app and the npm/CLI
+
+DSH now ships twice, and the two builds **share one `$DSH_HOME` (`~/.dsh`) and one skills root**, so
+the skill is installed once and serves both. What differs is the **profile**:
+
+| | desktop build | npm/CLI |
+| --- | --- | --- |
+| profile | `desktop` (created and used by the app) | `web` (a served session) / `headless` (one-shot runs) |
+| providers live in | `profiles/desktop/cordis.patch.yml` | `profiles/web/cordis.patch.yml` |
+| skills root | `$DSH_HOME/skills` | the same one |
+
+The skill **detects which build it is running in** — DSH injects `DSH_PROFILE_DIR` / `DSH_PROFILE`
+into every command it launches — reports it as `distribution`, and edits **that** build's patch, so
+the desktop build never rewrites the CLI's providers or the other way round. A profile that has no
+`llm-pi-ai` row is reported, with the other distribution's location, instead of being silently
+replaced by it. Only from a plain shell (no DSH environment) with more than one candidate do you have
+to name one with `--settings <path>`.
+
+**The desktop build carries its own Node**, and a machine's `node` can be unusable (an nvm shim with
+no active version). For that case the skill ships wrappers:
+
+```sh
+scripts/run-apply.cmd --apply      # Windows: the writer
+scripts/run-apply.sh  --apply      # macOS / Linux
+scripts/run-check.cmd|sh           # the read-only checker, same resolution
+```
+
+They try `$DSH_SKILL_NODE`, then `node` on PATH *(executed to verify, not merely found)*, then the
+desktop's own executable, then its bundled Node distribution, and otherwise exit `2` listing what was
+tried.
+
 ### What it writes, and into which file
 
 The document is a **profile patch** — `$DSH_HOME/profiles/<profile>/cordis.patch.yml` — which is
 where DSH 0.1.7 keeps its settings (it imports the old `settings.yaml` once at boot and renames it,
-so the old file is no longer read). The skill finds the patch itself; `--settings <path>` pins one
-when a machine has several.
+so the old file is no longer read). The skill finds the patch itself, following the profile the
+session runs under; `--settings <path>` pins one when a plain shell has several.
 
 ```yaml
 - id: llm-pi-ai
@@ -350,8 +381,10 @@ environment or the invocation is unusable.
 | Variable | Meaning |
 | --- | --- |
 | `DSH_HOME` | DSH home (default `~/.dsh`) — where `profiles/` (the profile patches) and the native skills root live |
+| `DSH_PROFILE` / `DSH_PROFILE_DIR` | the profile this session runs under (the desktop build uses `desktop`, the CLI `web`/`headless`). Injected by DSH; it decides which patch is edited, so you never set it |
 | `DSH_AGENTS_HOME` | the shared user skills root (default `~/.agents`) |
 | `DSH_ROOT` | the DSH install holding `node_modules`; `--dsh-root` overrides it |
+| `DSH_SKILL_NODE` | for the `run-apply.*` / `run-check.*` wrappers only: a Node executable to try first |
 | `DSH_NO_SUBPROCESS=1` | skip the `where`/`which` fallback in install discovery |
 
 ## Verify

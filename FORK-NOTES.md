@@ -10,6 +10,42 @@ git diff 541bad4 HEAD --stat
 git diff 541bad4 HEAD -- SKILL.md
 ```
 
+## Revision 4: the desktop build, which runs its own profile and its own Node
+
+DSH now ships as a desktop app as well as the npm/CLI, and the two are not separate homes: both use
+`$DSH_HOME` (`~/.dsh`) and the same `skills/` root, but each runs **its own profile** — `desktop` for
+the app, `web` / `headless` for the CLI — so each keeps its providers in its own
+`profiles/<profile>/cordis.patch.yml`. The skill resolved "the one profile patch that configures
+`llm-pi-ai`", which on a machine with both builds matched **two** files and stopped with `exit 2`:
+correct, but useless for the build the user was actually sitting in.
+
+| Area | Revision 3 | Now |
+| --- | --- | --- |
+| Target resolution | `--settings`, else the unique profile patch configuring `llm-pi-ai` | `--settings`, else **the profile this session runs under** (`DSH_PROFILE_DIR`, then `DSH_PROFILE`), else the unique one |
+| A profile with no `llm-pi-ai` row | indistinguishable from another profile's | reported as its own case, with the other distributions listed — never silently replaced by one of them |
+| Several candidates | `exit 2`, paths only | `exit 2`, each path labelled `desktop 版` / `npm/CLI 版` |
+| Distribution | not modelled | detected and reported (`distribution`, `--json.flavor`): the profile name decides |
+| Catalog discovery | `$DSH_HOME/profiles/node_modules`, execPath, platform defaults | plus the desktop build's dependency tree and `app.asar.unpacked` (a machine with no shared store) |
+| Running the scripts | assumes a working `node` on PATH | `scripts/run-apply.cmd\|sh` and `run-check.cmd\|sh`: `$DSH_SKILL_NODE` → `node` on PATH (**executed** to verify) → the desktop's own executable → the desktop's bundled Node → `exit 2` listing what was tried |
+| Docs | one distribution | both, in `SKILL.md`, `REFERENCE.md` and both READMEs |
+
+Observed on the machine this was written on, after installing the desktop build (`0.2.0-rc.2`):
+`DSH_PROFILE=desktop`, `DSH_PROFILE_DIR=…\.dsh\profiles\desktop`; the desktop patch carries the
+same `- id: llm-pi-ai` / `config.providers` shape, so no editor change was needed; the shared store
+`profiles/node_modules` holds `dsh 0.2.0-rc.2` / `pi-ai 0.87.1` (41 catalog providers, up from 39);
+the desktop's `resources/runtime` ships `runtime.json`, a Node distribution under
+`primary-runtime/dependencies/node/bin/`, and `bin/node.cmd`, which only works where
+`%DSH_DESKTOP_NODE_EXECUTABLE%` is set; and `node` on PATH stopped working altogether (an nvm shim
+with no active version), which is why the wrappers exist and why the bundled Node was used for the
+verification below.
+
+Verified in a desktop session: `--self-test` 23/23, the checker resolving
+`profiles/desktop/cordis.patch.yml` and exit 0 (it used to exit 2), the writer reporting `covered`
+with `flavor.kind = "desktop"`, the CLI case (`DSH_PROFILE=web`) targeting the `web` patch instead,
+a provider-less profile (`headless`) refusing with cross-distribution guidance, a plain shell still
+refusing between two unlabelled candidates, and `run-check.cmd` producing correct output on a machine
+where `node` on PATH does not run at all.
+
 ## Revision 3: the document moved from `settings.yaml` to the profile patch
 
 DSH 0.1.7 removed `settings.yaml`: `dsh-settings` reads it once at boot, renames it to

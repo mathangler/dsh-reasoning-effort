@@ -1,6 +1,12 @@
 /**
- * dsh-install.mjs — locate the DSH install, its pinned pi-ai catalog, and the
- * `dsh-llm-pi-ai` compat gates.
+ * dsh-install.mjs — locate the running DSH distribution, its profile patch, its pinned pi-ai
+ * catalog, and the `dsh-llm-pi-ai` compat gates.
+ *
+ * Two distributions ship DSH and both keep everything under the same `$DSH_HOME`
+ * (`~/.dsh`), but each runs its own **profile**: the desktop app creates and uses `desktop`,
+ * the CLI uses `web` / `headless`. A profile's document is
+ * `$DSH_HOME/profiles/<profile>/cordis.patch.yml`, and the running build tells us which one it
+ * is through `DSH_PROFILE_DIR` / `DSH_PROFILE`, which every command it launches inherits.
  *
  * Cross-platform by construction. Candidates are derived from the environment
  * and from `process.execPath` *before* any subprocess is attempted, so
@@ -11,11 +17,11 @@
  */
 import { existsSync, readdirSync, readFileSync } from 'node:fs'
 import { createRequire } from 'node:module'
-import { dirname, join, resolve } from 'node:path'
+import { basename, dirname, join, resolve } from 'node:path'
 import { homedir } from 'node:os'
 import { spawnSync } from 'node:child_process'
 
-/** `$DSH_HOME`, defaulting to `~/.dsh`. */
+/** `$DSH_HOME`, defaulting to `~/.dsh`. Both distributions share it. */
 export function dshHome() {
   return process.env.DSH_HOME !== undefined && process.env.DSH_HOME.length > 0
     ? process.env.DSH_HOME
@@ -55,14 +61,80 @@ export function declaresPiAi(path) {
 }
 
 /**
+ * The profile this session runs under, from the harness environment.
+ *
+ * DSH exports `DSH_PROFILE_DIR` (and `DSH_PROFILE`) to every command it runs, and each
+ * distribution has its own profile: the desktop app creates and uses `desktop`, the CLI uses
+ * `web` / `headless`. That is the *only* thing that decides which document belongs to the running
+ * build, so it is what this function reports.
+ */
+export function activeProfile() {
+  const dir = process.env.DSH_PROFILE_DIR
+  if (typeof dir === 'string' && dir.length > 0 && existsSync(dir)) {
+    return { profile: process.env.DSH_PROFILE ?? basename(dir), dir, source: 'DSH_PROFILE_DIR' }
+  }
+  const name = process.env.DSH_PROFILE
+  if (typeof name === 'string' && name.length > 0) {
+    const candidate = join(dshHome(), 'profiles', name)
+    return { profile: name, dir: existsSync(candidate) ? candidate : undefined, source: 'DSH_PROFILE' }
+  }
+  return undefined
+}
+
+/**
+ * The installed desktop build, when there is one.
+ *
+ * Its `resources/runtime/runtime.json` names the desktop version and sits next to the Node the app
+ * runs on, which matters because a machine can have the desktop build and no usable `node` on
+ * PATH. Nothing here is required to *edit* the document — the profile patch is the same shape in
+ * both distributions — it exists so a run can say which build it is looking at, and so the
+ * documented fallback has a real path to point at.
+ */
+export function desktopRuntime() {
+  const candidates = []
+  if (process.platform === 'win32') {
+    if (process.env.LOCALAPPDATA) candidates.push(join(process.env.LOCALAPPDATA, 'Programs', 'DeepSeek Harness', 'resources', 'runtime'))
+    if (process.env.ProgramFiles) candidates.push(join(process.env.ProgramFiles, 'DeepSeek Harness', 'resources', 'runtime'))
+  } else if (process.platform === 'darwin') {
+    candidates.push('/Applications/DeepSeek Harness.app/Contents/Resources/runtime')
+  } else {
+    candidates.push(
+      join(homedir(), '.local', 'share', 'deepseek-harness', 'resources', 'runtime'),
+      '/opt/DeepSeek Harness/resources/runtime',
+      '/usr/lib/deepseek-harness/resources/runtime',
+    )
+  }
+  for (const root of candidates) {
+    const manifest = join(root, 'runtime.json')
+    if (!existsSync(manifest)) continue
+    const doc = readJson(manifest)
+    const node = join(root, 'primary-runtime', 'dependencies', 'node', 'bin', process.platform === 'win32' ? 'node.exe' : 'node')
+    return { root, manifest, version: doc?.desktopVersion, node: existsSync(node) ? node : undefined }
+  }
+  return undefined
+}
+
+/** The distribution a profile belongs to, for reporting. Never decides *which* file is edited. */
+export function distributionOf(profile) {
+  if (profile === 'desktop') return { kind: 'desktop', label: `desktop 版（profile "${profile}"）` }
+  if (profile === 'web' || profile === 'headless') return { kind: 'cli', label: `npm/CLI 版（profile "${profile}"）` }
+  return { kind: 'unknown', label: `profile "${profile}"` }
+}
+
+/**
  * The one profile patch a run should act on.
  *
- * Either an explicit `--settings <path>`, or the single profile patch that configures
- * `llm-pi-ai`. More than one is *not* picked for the user: which profile they mean is their call,
- * and each document gets its own backup, validation and report. Both scripts resolve their target
- * through here, so they can never disagree about which file is being talked about.
+ * Order: an explicit `--settings <path>`, then **the profile this session runs under** (which is
+ * what makes the desktop build and the CLI configure their own document instead of each other's),
+ * then — for a run from a plain shell with no DSH environment — the single profile patch that
+ * configures `llm-pi-ai`. Several candidates are never picked between: each document needs its own
+ * backup, validation and report, so the caller is told to name one.
+ *
+ * Both scripts resolve their target through here, so they can never disagree about which file is
+ * being talked about.
  */
 export function resolveTarget(explicitPath) {
+  const desktop = desktopRuntime()
   if (explicitPath !== undefined) {
     const path = resolve(explicitPath)
     if (!existsSync(path)) return { error: `document not found: ${path}` }
@@ -72,24 +144,64 @@ export function resolveTarget(explicitPath) {
         hint: 'This skill edits a DSH profile patch: $DSH_HOME/profiles/<profile>/cordis.patch.yml',
       }
     }
-    return { target: { path, profile: undefined } }
+    return { target: { path, profile: undefined, kind: 'explicit', evidence: 'named with --settings', desktop } }
   }
+
+  const active = activeProfile()
+  if (active?.dir !== undefined) {
+    const path = join(active.dir, 'cordis.patch.yml')
+    const distribution = distributionOf(active.profile)
+    if (existsSync(path) && declaresPiAi(path)) {
+      return {
+        target: {
+          path,
+          profile: active.profile,
+          kind: distribution.kind,
+          label: distribution.label,
+          evidence: `this session runs under profile "${active.profile}" (${active.source})`,
+          desktop,
+        },
+      }
+    }
+    const others = profilePatches().filter((p) => p.profile !== active.profile && existsSync(p.path) && declaresPiAi(p.path))
+    return {
+      error: `the profile this session runs under ("${active.profile}") ${existsSync(path) ? 'configures no llm-pi-ai row' : 'has no cordis.patch.yml'}`,
+      candidates: others.length === 0 ? [] : others.map((p) => `${p.path}  — ${distributionOf(p.profile).label}`),
+      hint:
+        others.length === 0
+          ? 'Add the provider in the DSH GUI (that creates the row), then run this again.'
+          : 'Those belong to another distribution; pass --settings <path> only if you really mean to configure that one.',
+    }
+  }
+
   const all = profilePatches()
   const found = all.filter((p) => existsSync(p.path) && declaresPiAi(p.path))
   if (found.length === 0) {
     return {
-      error: `no profile patch under ${join(dshHome(), 'profiles')} configures llm-pi-ai`,
+      error: `no profile patch under ${join(dshHome(), 'profiles')} configures llm-pi-ai, and this shell has no DSH_PROFILE to go by`,
       candidates: all.map((p) => p.path),
       hint: 'Add the provider in the DSH GUI first (that creates the row), or pass --settings <path>.',
     }
   }
   if (found.length > 1) {
     return {
-      error: `${found.length} profile patches configure llm-pi-ai; name the one to use with --settings`,
-      candidates: found.map((p) => p.path),
+      error: `${found.length} profile patches configure llm-pi-ai, and this shell has no DSH_PROFILE to go by; name the one to use with --settings`,
+      candidates: found.map((p) => `${p.path}  — ${distributionOf(p.profile).label}`),
+      hint: 'Inside a DSH session this resolves itself; from a plain shell the distribution has to be named.',
     }
   }
-  return { target: found[0] }
+  const only = found[0]
+  const distribution = distributionOf(only.profile)
+  return {
+    target: {
+      path: only.path,
+      profile: only.profile,
+      kind: distribution.kind,
+      label: distribution.label,
+      evidence: 'the only profile patch that configures llm-pi-ai',
+      desktop,
+    },
+  }
 }
 
 /** Global `node_modules` directories implied by the running Node binary. */
@@ -114,6 +226,14 @@ export function candidateRoots(dshRootArg) {
   if (dshRootArg !== undefined) roots.push(dshRootArg)
   if (process.env.DSH_ROOT) roots.push(process.env.DSH_ROOT)
   roots.push(join(dshHome(), 'profiles', 'node_modules'))
+  // The desktop build bundles its own runtime; its dependency tree is the version-correct place to
+  // look when the shared profile store has not been populated (a desktop-only machine).
+  const desktop = desktopRuntime()
+  if (desktop !== undefined) {
+    roots.push(join(desktop.root, 'primary-runtime', 'dependencies', 'node', 'node_modules'))
+    roots.push(join(desktop.root, '..', 'app.asar.unpacked', 'dsh', 'node_modules'))
+    roots.push(join(desktop.root, 'app.asar.unpacked', 'dsh', 'node_modules'))
+  }
   roots.push(...execPathRoots())
   if (process.env.APPDATA) roots.push(join(process.env.APPDATA, 'npm', 'node_modules'))
   if (process.env.ProgramFiles) roots.push(join(process.env.ProgramFiles, 'nodejs', 'node_modules'))

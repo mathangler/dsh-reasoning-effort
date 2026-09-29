@@ -256,7 +256,17 @@ if (has('--self-test')) {
 // --------------------------------------------------------------- the target(s)
 const targets = discoverTargets()
 const settingsPath = targets[0].path
-const profileLabel = targets[0].profile
+// Which distribution this run is configuring: the desktop app creates and uses the `desktop`
+// profile, the CLI uses `web` / `headless`, and each keeps its providers in its own patch. The
+// target is chosen by the profile the *session* runs under, so the two can never be mixed up; this
+// is only what the run reports.
+const flavor = {
+  kind: targets[0].kind ?? 'unknown',
+  profile: targets[0].profile,
+  label: targets[0].label ?? (targets[0].profile === undefined ? 'explicit --settings' : `profile "${targets[0].profile}"`),
+  evidence: targets[0].evidence,
+  desktopVersion: targets[0].desktop?.version,
+}
 // A single backup file, overwritten on every write, holding the state from *before* the
 // last operation — an apply or a restore. That makes it a one-step undo rather than an
 // archive, which is what the document needs: it is regenerated from the configuration on
@@ -746,7 +756,8 @@ function buildReport() {
   const out = []
   out.push('# 思考强度核对报告（自定义提供方）')
   out.push('')
-  out.push(`- 目标文档：\`${settingsPath}\`${profileLabel === undefined ? '' : `（profile ${profileLabel}）`}`)
+  out.push(`- 目标文档：\`${settingsPath}\``)
+  out.push(`- 发行版：**${flavor.label}**${flavor.desktopVersion === undefined ? '' : ` · Desktop ${flavor.desktopVersion}`}${flavor.evidence === undefined ? '' : ` —— ${flavor.evidence}`}`)
   out.push(`- dsh 安装：\`${install.label}\`${version === undefined ? '' : ` · dsh ${version}`}`)
   out.push(`- pi-ai 目录：${catalog.providers.size} 个 provider${catalog.available ? '' : '（**未找到，能力无从判定**）'}`)
   out.push(`- compat gates：${gates.available ? '已解析' : `**不可用**（${gates.reason}）→ 跳过 compat 结论`}`)
@@ -1185,6 +1196,7 @@ if (asJson) {
   console.log(JSON.stringify({
     contract: CONTRACT,
     settings: settingsPath,
+    flavor,
     dsh: { root: install.label, version, piAiCatalog: catalog.providers.size, compatGates: gates.available },
     mode: { apply: doApply, fix: doFix, strict: doStrict, fixRoutes: doFixRoutes, probe: doProbe, scope },
     verdict,

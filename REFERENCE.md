@@ -46,13 +46,58 @@ picker all interpret the row's `config` exactly as they interpreted the section.
 
 Two consequences the tools encode:
 
-- The target is resolved, not assumed: `--settings <path>`, else the one profile patch that
-  configures `llm-pi-ai`. More than one is reported with `exit 2` rather than picked, because which
-  profile the user means is not the tool's call, and each document would need its own backup,
-  validation and report.
+- The target is resolved, not assumed: `--settings <path>`, else **the profile this session runs
+  under**, else the one profile patch that configures `llm-pi-ai`. Several candidates are reported
+  with `exit 2` rather than picked, because each document would need its own backup, validation and
+  report.
 - The path-diff allow-list is `[id=llm-pi-ai].config.providers.` plus
   `[id=agent-default-model].config.reasoningEffort`. `flatten` names a sequence element carrying an
   `id` as `[id=<id>]`, so the guard does not depend on where a row sits in the file.
+
+## Two distributions, two profiles
+
+DSH ships twice — the **desktop app** and the **npm/CLI** — and they are not separate homes:
+
+| | desktop build | CLI |
+| --- | --- | --- |
+| home | `$DSH_HOME` (`~/.dsh`) — the same one | `$DSH_HOME` (`~/.dsh`) |
+| profile | `desktop` (created and used by the app) | `web` (a served session) / `headless` (one-shot runs) |
+| document | `profiles/desktop/cordis.patch.yml` | `profiles/web/cordis.patch.yml` |
+| skills root | `$DSH_HOME/skills` — the same one | `$DSH_HOME/skills` |
+
+So one installed skill serves both, and the only thing that differs is **which profile patch holds
+that build's providers**. Every command DSH launches inherits `DSH_PROFILE`, `DSH_PROFILE_DIR`
+(observed in a desktop session: `desktop`, `C:\Users\chend\.dsh\profiles\desktop`), `DSH_HOME`,
+`DSH_SESSION_ID`, `DSH_WEB_URL`. `DSH_PROFILE_DIR` is the exact answer to "which document belongs to
+the build I am running in", and it is what `resolveTarget` uses first — the desktop build therefore
+edits `desktop`, a CLI session edits `web`, and neither can configure the other by accident. The
+profile name is also what the run reports as `distribution` (`desktop 版` / `npm/CLI 版`).
+
+A profile that exists but has no `llm-pi-ai` row is **not** silently replaced by another profile's:
+the run says so, lists the other distributions, and exits `2`. That is the difference between "this
+build has no custom providers yet" and "this build's providers live elsewhere".
+
+**The desktop build carries its own toolchain.** Its `resources/runtime` holds `runtime.json`
+(`desktopVersion`, `node`, `pnpm`, `python`), a Node distribution under
+`primary-runtime/dependencies/node/bin/`, and two wrappers, `bin/node.cmd` / `bin/node`:
+
+```bat
+set ELECTRON_RUN_AS_NODE=1
+"%DSH_DESKTOP_NODE_EXECUTABLE%" --expose-internals %*
+```
+
+so those wrappers only work inside the app's environment, where that variable is set. A plain
+`node` on PATH can also be unusable (an nvm shim with no active version — observed on this machine
+after the desktop install). Hence the shipped `scripts/run-apply.cmd|sh` and
+`scripts/run-check.cmd|sh`: `$DSH_SKILL_NODE` → `node` on PATH *(run to verify, not merely found)* →
+the desktop executable → the bundled Node distribution → `exit 2` with the list.
+
+The **catalog** the skill reads is the `@earendil-works/pi-ai` that the running DSH resolves, which
+on a machine with both builds is the shared store `$DSH_HOME/profiles/node_modules` (observed at
+`dsh 0.2.0-rc.2` / `pi-ai 0.87.1`, 41 providers, after the desktop upgrade). The desktop's own copy
+lives inside `app.asar`, which a plain Node process cannot read, so the shared store is both the
+readable and the correct source — and `candidateRoots` also lists the desktop's dependency and
+`app.asar.unpacked` trees for a machine where the shared store has not been populated.
 
 ## Why a hand-declared route exposes nothing
 

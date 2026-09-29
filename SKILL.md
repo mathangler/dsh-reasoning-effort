@@ -16,8 +16,27 @@ about — never guessed.
 top-level sequence of loader entries where the `llm-pi-ai` row carries `config.providers.<route>`.
 The tools find it themselves (an explicit `--settings <path>` overrides that), so no path has to be
 guessed. `settings.yaml` is *not* used: DSH 0.1.7 imports it once at boot and renames it, so writing
-it would change nothing. If more than one profile patch configures `llm-pi-ai`, the run stops with
-`exit 2` and lists them instead of picking one.
+it would change nothing.
+
+**Two distributions ship DSH, and each has its own profile.** The desktop app creates and uses
+`desktop`; the CLI uses `web` / `headless`. Both keep everything under the same `$DSH_HOME`, so the
+skill is installed once and serves both — but each one's providers live in **its own** patch. A run
+resolves the profile from `DSH_PROFILE_DIR` / `DSH_PROFILE`, which every command inside a DSH
+session inherits, and reports it as `distribution`: it configures the build it is running in, never
+the other one. From a plain shell (no DSH environment) with more than one candidate, it stops with
+`exit 2` and lists them instead of choosing.
+
+**If `node` is not usable, use the shipped wrapper.** The desktop build carries its own Node, and a
+machine can have a `node` on PATH that does not run (an nvm shim with no active version):
+
+```
+$SKILL/scripts/run-apply.cmd <args>       Windows
+$SKILL/scripts/run-apply.sh  <args>       macOS / Linux
+$SKILL/scripts/run-check.cmd|sh <args>    the read-only checker, same resolution
+```
+
+Each wrapper tries `$DSH_SKILL_NODE`, then `node` on PATH (verified by running it, not just found),
+then the desktop build's own executable, then its bundled Node, and only then gives up with `exit 2`.
 
 **Contract version 1.** If a script prints a different `contract` number, stop and tell the
 user to reinstall: the files on disk do not match this document.
@@ -38,6 +57,10 @@ node $SKILL/scripts/apply-reasoning-efforts.mjs --self-test
 
 Exit `0` means this build behaves as documented on this machine. Anything else: show the
 output and stop — do not go near the user's settings.
+
+If `node` itself does not run on this machine, use the wrapper for **every** command below
+(`$SKILL/scripts/run-apply.cmd …` on Windows, `$SKILL/scripts/run-apply.sh …` elsewhere); it finds
+a Node and passes the arguments through unchanged.
 
 **2. Apply, and read the verdict.**
 
