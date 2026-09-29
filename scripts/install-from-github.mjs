@@ -112,6 +112,24 @@ try {
 }
 console.log(`source    : ${via}`)
 
+// A tarball is delivered through git's checkout filters, so a file with an `eol` attribute comes
+// down with the checked-out bytes rather than the stored ones — `scripts/*.cmd` is CRLF on checkout
+// (that is what `cmd` needs) while the repository stores LF, so its blob id cannot match. Every file
+// the tarball cannot reproduce is fetched from the blobs API instead, which returns the stored bytes;
+// nothing is written until all of them match, so a half-faithful install is impossible.
+const mismatched = blobsWanted.filter((entry) => {
+  const content = files.get(entry.path)
+  return content === undefined || gitBlobSha(content) !== entry.sha
+})
+if (mismatched.length > 0) {
+  console.log(`refetching ${mismatched.length} file(s) whose checkout form differs from the stored blob:`)
+  for (const entry of mismatched) {
+    const blob = await api(`/repos/${repo}/git/blobs/${entry.sha}`)
+    files.set(entry.path, Buffer.from(blob.content, 'base64'))
+    console.log(`  ${entry.path}`)
+  }
+}
+
 for (const entry of blobsWanted) {
   const content = files.get(entry.path)
   if (content === undefined) {
