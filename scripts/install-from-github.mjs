@@ -148,7 +148,16 @@ rmSync(dest, { recursive: true, force: true })
 for (const entry of blobsWanted) {
   const target = join(dest, entry.path)
   mkdirSync(dirname(target), { recursive: true })
-  writeFileSync(target, files.get(entry.path))
+  // The bytes verified above are the stored blob; a working tree may differ, and `.gitattributes`
+  // declares exactly one such rule for this skill: `*.cmd` is CRLF on checkout, because `cmd` reads a
+  // batch file byte by byte and an LF-only one mis-parses — labels and `if defined` come apart with
+  // `'m' is not recognized as an internal or external command`. Applying it here keeps an install
+  // faithful to the repository *and* usable on Windows.
+  const stored = files.get(entry.path)
+  const content = entry.path.endsWith('.cmd')
+    ? Buffer.from(stored.toString('utf8').replace(/\r?\n/g, '\r\n'), 'utf8')
+    : stored
+  writeFileSync(target, content)
   // Carry the executable bit across. A tree entry is `100755` for the shell wrappers, and an
   // install that dropped it would leave `./run-apply.sh` unrunnable on Linux and macOS. `chmod`
   // barely exists on Windows, so a failure there is not an error.
