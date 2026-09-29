@@ -1,6 +1,14 @@
 # Normalize line endings on check-in so the skill behaves identically on
-# Windows, macOS and Linux. Working trees may use CRLF; the repository is LF.
+# Windows, macOS and Linux. The repository stores LF; a working tree may use CRLF.
 * text=auto eol=lf
+
+# Windows batch files must be checked out CRLF. `cmd` reads a batch file byte by byte and
+# mis-parses an LF-only one — labels and `if defined` lines come apart, producing errors such as
+# `'m' is not recognized as an internal or external command`. The blob stays LF in the repository.
+*.cmd text eol=crlf
+
+# POSIX shell scripts must stay LF: a CR at the end of a line becomes part of the command.
+*.sh text eol=lf
 
 # Keep these binary regardless of content sniffing.
 *.png binary

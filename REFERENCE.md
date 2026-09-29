@@ -89,8 +89,25 @@ set ELECTRON_RUN_AS_NODE=1
 so those wrappers only work inside the app's environment, where that variable is set. A plain
 `node` on PATH can also be unusable (an nvm shim with no active version — observed on this machine
 after the desktop install). Hence the shipped `scripts/run-apply.cmd|sh` and
-`scripts/run-check.cmd|sh`: `$DSH_SKILL_NODE` → `node` on PATH *(run to verify, not merely found)* →
-the desktop executable → the bundled Node distribution → `exit 2` with the list.
+`scripts/run-check.cmd|sh`, whose resolution is deliberately *distribution-aware*:
+
+1. `$DSH_SKILL_NODE` — an explicit override, run once to verify it works;
+2. **in a desktop session (`DSH_PROFILE=desktop`), the desktop build's bundled Node**
+   (`…/resources/runtime/primary-runtime/dependencies/node/bin/node`) — the same build being
+   configured, a real Node distribution rather than the Electron shim;
+3. `node` on PATH, *executed* to verify (`node --version`) rather than merely found;
+4. the bundled Node again — a machine whose PATH has no usable node still works;
+5. `$DSH_DESKTOP_NODE_EXECUTABLE` with `ELECTRON_RUN_AS_NODE=1`, the app's own executable;
+6. `exit 2`, listing every path that was tried.
+
+The order is not "always prefer the app's copy" because launching a binary from inside the app bundle
+costs more: measured on this machine, the same dry run took ~780 ms through the bundled Node and
+~410 ms through an nvm Node, and `--self-test` 4.1 s against 2.5 s. Both are fast enough, and a
+desktop session gets the app's own Node because that is what the user asked for — but a CLI session
+does not pay for it. `$DSH_SKILL_NODE` pins either one.
+
+Both scripts print the Node that ran them (`node: v… (path)` in the report, `node` in `--json`), so
+"which Node was used" is something a run states, not something anyone has to infer.
 
 The **catalog** the skill reads is the `@earendil-works/pi-ai` that the running DSH resolves, which
 on a machine with both builds is the shared store `$DSH_HOME/profiles/node_modules` (observed at

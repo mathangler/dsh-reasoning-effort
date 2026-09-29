@@ -26,7 +26,9 @@ correct, but useless for the build the user was actually sitting in.
 | Several candidates | `exit 2`, paths only | `exit 2`, each path labelled `desktop 版` / `npm/CLI 版` |
 | Distribution | not modelled | detected and reported (`distribution`, `--json.flavor`): the profile name decides |
 | Catalog discovery | `$DSH_HOME/profiles/node_modules`, execPath, platform defaults | plus the desktop build's dependency tree and `app.asar.unpacked` (a machine with no shared store) |
-| Running the scripts | assumes a working `node` on PATH | `scripts/run-apply.cmd\|sh` and `run-check.cmd\|sh`: `$DSH_SKILL_NODE` → `node` on PATH (**executed** to verify) → the desktop's own executable → the desktop's bundled Node → `exit 2` listing what was tried |
+| Running the scripts | assumes a working `node` on PATH | `scripts/run-apply.cmd\|sh` and `run-check.cmd\|sh`, and they are now the documented entry point. Resolution is distribution-aware: `$DSH_SKILL_NODE` → **the desktop build's bundled Node in a desktop session** → `node` on PATH (**executed** to verify) → the bundled Node as a fallback → the app's own executable → `exit 2` listing what was tried |
+| Which Node was used | unstated | every run prints it (`node: v… (path)`, and `--json.node`) |
+| Windows batch files | n/a | `.gitattributes` now pins `*.cmd` to CRLF (`*.sh` to LF). With the old blanket `eol=lf`, an LF-only `.cmd` is mis-parsed by cmd — labels and `if defined` lines come apart as `'m' is not recognized as an internal or external command` |
 | Docs | one distribution | both, in `SKILL.md`, `REFERENCE.md` and both READMEs |
 
 Observed on the machine this was written on, after installing the desktop build (`0.2.0-rc.2`):

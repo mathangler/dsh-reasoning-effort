@@ -274,14 +274,18 @@ to name one with `--settings <path>`.
 no active version). For that case the skill ships wrappers:
 
 ```sh
-scripts/run-apply.cmd --apply      # Windows: the writer
-scripts/run-apply.sh  --apply      # macOS / Linux
-scripts/run-check.cmd|sh           # the read-only checker, same resolution
+scripts\run-apply.cmd --apply      # Windows (backslashes: cmd breaks at a slash)
+sh scripts/run-apply.sh --apply    # macOS / Linux
+scripts\run-check.cmd              # the read-only checker, same resolution
+sh scripts/run-check.sh            # macOS / Linux
 ```
 
-They try `$DSH_SKILL_NODE`, then `node` on PATH *(executed to verify, not merely found)*, then the
-desktop's own executable, then its bundled Node distribution, and otherwise exit `2` listing what was
-tried.
+They use the Node of the build they are in: `$DSH_SKILL_NODE`, then — in a desktop session — the
+desktop build's bundled Node, then `node` on PATH *(executed to verify, not merely found)*, then the
+bundled Node again as a fallback, then the app's own executable, and otherwise `exit 2` listing what
+was tried. The bundled copy is only preferred where it *is* the build being configured, because
+launching a binary from inside the app bundle costs more (measured: 780 ms vs 410 ms for the same dry
+run). Every run prints the `node` it used, in the report and in `--json`.
 
 ### What it writes, and into which file
 

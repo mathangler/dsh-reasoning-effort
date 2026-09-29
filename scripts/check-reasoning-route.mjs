@@ -135,6 +135,7 @@ const report = {
   contract: CONTRACT,
   settings: settingsPath,
   flavor,
+  node: { version: process.version, execPath: process.execPath },
   dsh: { root: install.label, version: dshVersion(install), piAiCatalog: catalog.providers.size, compatGates: gates.available },
   routes: [],
   problems: [],
@@ -272,6 +273,7 @@ if (has('--json')) {
 } else {
   console.log(`profile patch: ${settingsPath}`)
   console.log(`distribution : ${flavor.label}${flavor.desktopVersion === undefined ? '' : ` · Desktop ${flavor.desktopVersion}`}${flavor.evidence === undefined ? '' : ` — ${flavor.evidence}`}`)
+  console.log(`node         : ${process.version} (${process.execPath})`)
   console.log(`contract    : ${CONTRACT} (SKILL.md states the contract it expects)`)
   console.log(`dsh install : ${install.label}${dshVersion(install) === undefined ? '' : ` (dsh ${dshVersion(install)})`}`)
   console.log(`pi-ai       : ${catalog.providers.size} catalog providers`)

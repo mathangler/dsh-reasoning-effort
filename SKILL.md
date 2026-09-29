@@ -35,41 +35,54 @@ $SKILL/scripts/run-apply.sh  <args>       macOS / Linux
 $SKILL/scripts/run-check.cmd|sh <args>    the read-only checker, same resolution
 ```
 
-Each wrapper tries `$DSH_SKILL_NODE`, then `node` on PATH (verified by running it, not just found),
-then the desktop build's own executable, then its bundled Node, and only then gives up with `exit 2`.
+Each wrapper uses the Node of the build it is in: `$DSH_SKILL_NODE` if set, then — in a desktop
+session — the desktop build's own Node, then `node` on PATH *(verified by running it, not just
+found)*, then the desktop's Node again as a fallback for a machine whose PATH has no usable node,
+then the app's executable run as Node, and only then `exit 2` listing what it tried.
 
 **Contract version 1.** If a script prints a different `contract` number, stop and tell the
 user to reinstall: the files on disk do not match this document.
 
 `$SKILL` below is this skill's directory, given to you when the skill loads (by default
-`~/.dsh/skills/dsh-reasoning-effort`). Paths use forward slashes on purpose — they work
-unchanged on Windows, macOS and Linux, and no value here needs quoting.
+`~/.dsh/skills/dsh-reasoning-effort`). **Arguments** use forward slashes on purpose — they work
+unchanged on Windows, macOS and Linux and need no quoting. The one exception is a Windows wrapper
+that the shell has to *execute*: give that path backslashes (`$SKILL\scripts\run-apply.cmd`),
+because cmd splits `scripts/run-apply.cmd` at the slash and tries to run `scripts`. PowerShell accepts
+either. Quote the path if the skills directory contains a space.
 
 ## Do exactly this
 
-Five steps, in order. Do not improvise, and do not hand-edit YAML.
+Five steps, in order, through the wrapper. Do not improvise, do not substitute flags, and do not
+hand-edit YAML. The wrapper picks the Node to use — the desktop build's own Node first when the
+desktop build is installed, because that one is always present and matches the app; otherwise `node`
+on PATH — and **every run prints the `node` it used**, so this can be confirmed instead of assumed.
+
+| | command form |
+| --- | --- |
+| Windows | `$SKILL\scripts\run-apply.cmd <args>` |
+| macOS / Linux | `sh $SKILL/scripts/run-apply.sh <args>` |
+
+The read-only checker has the same pair: `run-check.cmd` / `run-check.sh`.
 
 **1. Gate.**
 
 ```
-node $SKILL/scripts/apply-reasoning-efforts.mjs --self-test
+$SKILL\scripts\run-apply.cmd --self-test          Windows
+sh $SKILL/scripts/run-apply.sh --self-test        macOS / Linux
 ```
 
 Exit `0` means this build behaves as documented on this machine. Anything else: show the
 output and stop — do not go near the user's settings.
 
-If `node` itself does not run on this machine, use the wrapper for **every** command below
-(`$SKILL/scripts/run-apply.cmd …` on Windows, `$SKILL/scripts/run-apply.sh …` elsewhere); it finds
-a Node and passes the arguments through unchanged.
-
 **2. Apply, and read the verdict.**
 
 ```
-node $SKILL/scripts/apply-reasoning-efforts.mjs --apply --json
+$SKILL\scripts\run-apply.cmd --apply --json          Windows
+sh $SKILL/scripts/run-apply.sh --apply --json        macOS / Linux
 ```
 
-Read only `verdict`, `nextAction`, `commands` and `coverage` from the JSON. The Chinese
-markdown report is for showing the user, not for you to interpret.
+Read only `verdict`, `nextAction`, `commands` and `coverage` from the JSON. Everything else — the
+Chinese markdown report, `plan`, `flavor`, `node` — is for showing the user.
 
 **3. `nextAction` decides what happens next — nothing else does.**
 
@@ -84,7 +97,8 @@ markdown report is for showing the user, not for you to interpret.
 **4. Verify.**
 
 ```
-node $SKILL/scripts/check-reasoning-route.mjs --json
+$SKILL\scripts\run-check.cmd --json          Windows
+sh $SKILL/scripts/run-check.sh --json        macOS / Linux
 ```
 
 `problems` must be `[]`. Anything else is a finding to report, not to fix by hand.
@@ -112,6 +126,12 @@ declared `false` has no effort pane at all.
 
 - Exit codes: `0` every custom route in scope is covered · `1` something is pending or broken ·
   `2` the environment or the invocation is unusable.
+- The run states two facts you never have to infer: `flavor` (`distribution` in the text) — the
+  build whose document is being edited, `desktop` or `cli`, and why it thinks so — and `node` — the
+  Node that ran the script. If `flavor.kind` is not the build the user is sitting in, stop and report
+  that instead of editing.
+- `exit 2` with a list of profile patches means the profile could not be decided (a plain shell with
+  no DSH environment and several candidates). Do not pick one: ask, or use `--settings <path>`.
 - `--decide <route>/<model>=<levels|false|skip>` records an answer; `--evidence vendor
   --source <url>` records a researched fact instead of a decision.
 - One `--apply` covers new providers, new models, changed models and deleted models. It is

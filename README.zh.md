@@ -240,13 +240,17 @@ DSH 现在有两个发行版，**它们共用同一个 `$DSH_HOME`（`~/.dsh`）
 **桌面版自带 Node**，而机器上的 `node` 可能根本跑不起来（例如 nvm 没有激活任何版本）。这时用技能自带的包装脚本：
 
 ```sh
-scripts/run-apply.cmd --apply      # Windows：跑写入器
-scripts/run-apply.sh  --apply      # macOS / Linux
-scripts/run-check.cmd|sh           # 只读校验器，同一套解析顺序
+scripts\run-apply.cmd --apply      # Windows（路径用反斜杠：cmd 会在斜杠处断开）
+sh scripts/run-apply.sh --apply    # macOS / Linux
+scripts\run-check.cmd              # Windows 只读校验器，同一套解析顺序
+sh scripts/run-check.sh            # macOS / Linux
 ```
 
-解析顺序：`$DSH_SKILL_NODE` → PATH 上的 `node`（**实际执行**验证，而不是只看是否存在）→ 桌面版自己的可执行文件
-（`DSH_DESKTOP_NODE_EXECUTABLE`）→ 桌面版自带的 Node 发行版 → 都不行则退出 `2` 并列出尝试过的路径。
+解析顺序：`$DSH_SKILL_NODE` →（**桌面版会话里**）**桌面版自带的 Node** → PATH 上的 `node`（**实际执行**验证，
+而不是只看是否存在）→ 桌面版自带的 Node（PATH 里没有可用 node 时的兜底）→ 桌面版自己的可执行文件（以 Node 方式运行）
+→ 都不行则退出 `2` 并列出尝试过的路径。每次运行都会在报告与 `--json` 里写出**这一次用的是哪个 node**。
+之所以"只在桌面版会话里优先用自带 Node"，是因为从应用包内启动一个可执行文件更慢（实测同一件事 780 ms vs 410 ms）；
+想固定用哪个，设 `DSH_SKILL_NODE`。
 
 ### 它写进哪个文件、写成什么
 

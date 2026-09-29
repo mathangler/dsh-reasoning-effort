@@ -135,8 +135,9 @@ function discoverTargets() {
 if (has('--help') || has('-h')) {
   console.log(`usage: node apply-reasoning-efforts.mjs [options]
 
-  --settings <path>   process one profile patch (repeatable; default: every profile patch
-                      under $DSH_HOME/profiles that configures llm-pi-ai)
+  --settings <path>   process one profile patch (default: the profile this session runs under —
+                      \`DSH_PROFILE_DIR\`, which is how the desktop build and the CLI each edit
+                      their own providers instead of each other's)
   --dsh-root <path>   dsh install root holding node_modules (default: discovered)
   --route <name>      limit to these routes (repeatable; default: every custom route)
   --apply             write the document (default: dry run, prints the plan)
@@ -158,6 +159,9 @@ if (has('--help') || has('-h')) {
   A route-level \`reasoning:\` is never written, and removed whenever it is present: DSH
   applies it to every model on the route, so one model that lacks that level makes the
   whole route fail (see REFERENCE.md, "the route default").
+
+Env: DSH_PROFILE_DIR / DSH_PROFILE select the profile (desktop build vs CLI);
+     DSH_SKILL_NODE is honoured by the run-apply.* / run-check.* wrappers only.
 
 Exit codes: 0 every custom route is covered · 1 something is pending or broken ·
             2 the environment or the invocation is unusable
@@ -758,6 +762,7 @@ function buildReport() {
   out.push('')
   out.push(`- 目标文档：\`${settingsPath}\``)
   out.push(`- 发行版：**${flavor.label}**${flavor.desktopVersion === undefined ? '' : ` · Desktop ${flavor.desktopVersion}`}${flavor.evidence === undefined ? '' : ` —— ${flavor.evidence}`}`)
+  out.push(`- node：${process.version} · \`${process.execPath}\``)
   out.push(`- dsh 安装：\`${install.label}\`${version === undefined ? '' : ` · dsh ${version}`}`)
   out.push(`- pi-ai 目录：${catalog.providers.size} 个 provider${catalog.available ? '' : '（**未找到，能力无从判定**）'}`)
   out.push(`- compat gates：${gates.available ? '已解析' : `**不可用**（${gates.reason}）→ 跳过 compat 结论`}`)
@@ -1197,6 +1202,7 @@ if (asJson) {
     contract: CONTRACT,
     settings: settingsPath,
     flavor,
+    node: { version: process.version, execPath: process.execPath },
     dsh: { root: install.label, version, piAiCatalog: catalog.providers.size, compatGates: gates.available },
     mode: { apply: doApply, fix: doFix, strict: doStrict, fixRoutes: doFixRoutes, probe: doProbe, scope },
     verdict,
