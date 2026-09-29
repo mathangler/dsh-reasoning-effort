@@ -96,7 +96,10 @@ const blobs = []
 for (const file of meta.files) {
   const created = await api(`${base}/git/blobs`, 'POST', { content: tar.get(file.path).toString('base64'), encoding: 'base64' })
   if (created.sha !== file.blob) throw new Error(`blob sha mismatch for ${file.path}: api=${created.sha} git=${file.blob}`)
-  blobs.push({ path: file.path, mode: '100644', type: 'blob', sha: created.sha })
+  // The mode has to travel with the path: a tree entry for the shell wrappers is `100755`, and
+  // publishing everything as `100644` cannot reproduce a commit that adds an executable file — the
+  // created tree hashes differently, and the run aborts (correctly) before moving any ref.
+  blobs.push({ path: file.path, mode: file.mode ?? '100644', type: 'blob', sha: created.sha })
   console.log(`  blob ${file.path} -> ${created.sha}`)
 }
 

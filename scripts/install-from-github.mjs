@@ -9,7 +9,7 @@
  *
  * Usage: node install-from-github.mjs <dest-dir>   (token in GH_TOKEN)
  */
-import { mkdirSync, rmSync, writeFileSync } from 'node:fs'
+import { chmodSync, mkdirSync, rmSync, writeFileSync } from 'node:fs'
 import { createHash } from 'node:crypto'
 import { gunzipSync } from 'node:zlib'
 import { dirname, join } from 'node:path'
@@ -131,6 +131,16 @@ for (const entry of blobsWanted) {
   const target = join(dest, entry.path)
   mkdirSync(dirname(target), { recursive: true })
   writeFileSync(target, files.get(entry.path))
+  // Carry the executable bit across. A tree entry is `100755` for the shell wrappers, and an
+  // install that dropped it would leave `./run-apply.sh` unrunnable on Linux and macOS. `chmod`
+  // barely exists on Windows, so a failure there is not an error.
+  if (entry.mode === '100755') {
+    try {
+      chmodSync(target, 0o755)
+    } catch {
+      /* the platform does not model the bit */
+    }
+  }
 }
 console.log(`installed : ${dest}`)
-for (const entry of blobsWanted) console.log(`  ${entry.path}`)
+for (const entry of blobsWanted) console.log(`  ${entry.mode === '100755' ? '* ' : '  '}${entry.path}`)
